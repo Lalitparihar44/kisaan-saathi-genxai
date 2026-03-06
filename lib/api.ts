@@ -62,11 +62,11 @@ export async function fetchFields(): Promise<FieldCollection> {
         },
       });
     });
-    if (res.statusCode == 200) {
+    if (res.statusCode === 200 && res.data) {
       return res.data;
-    } else {
+   }else {
       toast.error(res.message || 'Failed to fetch fields');
-      return res.data;
+      return res;
     }
   } catch (error: any) {
     toast.error('Failed to fetch fields');
@@ -449,6 +449,7 @@ export async function fetchFieldsData(
 export async function fetchFarmScore(
   state?: string,
   district?: string,
+  subDistrict?: string,
   parameters?: string,
   from?: string,
 ): Promise<any> {
@@ -456,6 +457,7 @@ export async function fetchFarmScore(
     const queryParams: Record<string, string> = {};
     if (state) queryParams.state = state;
     if (district) queryParams.district = district;
+    if (subDistrict) queryParams.subDistrict = subDistrict;
     if (parameters) queryParams.parameters = parameters;
     if (from) queryParams.from = from;
     const queryString =
@@ -479,7 +481,7 @@ export async function fetchFarmScore(
   }
 }
 
-export async function fetchLocationData(): Promise<Record<string, string[]>> {
+export const fetchLocationData = async () => {
   try {
     const res = await apiCallWithRefresh(async () => {
       return await makeApiCall(`${API_BASE}/api/v1/state-districts`, {
@@ -489,33 +491,46 @@ export async function fetchLocationData(): Promise<Record<string, string[]>> {
         },
       });
     });
-    if (res.statusCode === 200) {
-      const data: Record<string, string[]> = {};
-      res.forEach((item: any) => {
-        data[item.state_name] = item.districts;
+
+    console.log("Location API response:", res);
+
+    if (res?.statusCode === 200 && Array.isArray(res.data)) {
+      const formatted: any = {};
+
+      res.data.forEach((item: any) => {
+        formatted[item.state_name] = item.districts;
       });
-      return data;
+
+      return formatted;
     }
-    throw new Error('Failed to fetch location data');
+
+    return {};
   } catch (error) {
-    console.error('Failed to fetch location data:', error);
-    throw error;
+    console.error("Location fetch error:", error);
+    return {};
   }
-}
+};
 
 export async function fetchSubDistricts(district: string): Promise<string[]> {
   try {
     const res = await apiCallWithRefresh(async () => {
-      return await makeApiCall(`${API_BASE}/api/v1/sub-districts?district=${district}`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('accessToken')}`,
+      return await makeApiCall(
+        `${API_BASE}/api/v1/sub-districts?district=${district}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('accessToken')}`,
+          },
         },
-      });
+      );
     });
-    if (res.statusCode === 200) {
-      return res.map((x: any) => x.sub_districts).flat();
+
+    console.log("Subdistrict API response:", res);
+
+    if (res?.statusCode === 200 && Array.isArray(res.data)) {
+      return res.data.map((x: any) => x.sub_districts).flat();
     }
+
     return [];
   } catch (error) {
     console.error('Error fetching sub-districts', error);
