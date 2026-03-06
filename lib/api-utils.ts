@@ -2,12 +2,16 @@ import axios, { AxiosRequestConfig } from 'axios';
 import { encodeValue, decodeValue } from './crypto';
 
 // Helper for making encoded API calls with axios
-export const makeApiCall = async (url: string, options: AxiosRequestConfig = {}) => {
+export const makeApiCall = async (
+  url: string,
+  options: AxiosRequestConfig = {}
+) => {
   let { data, ...restOptions } = options;
-  // Send encoded data
+
   if (data) {
-    data = {value: encodeValue(data)};
+    data = { value: encodeValue(data) };
   }
+
   const requestConfig: any = {
     ...restOptions,
     url,
@@ -17,10 +21,14 @@ export const makeApiCall = async (url: string, options: AxiosRequestConfig = {})
       ...restOptions.headers,
     },
   };
-  
 
   const response = await axios(requestConfig);
-  
-  // Return response directly
-  return decodeValue(response.data.value);
+
+  // SAFE HANDLING
+  if (response.data?.value) {
+    return decodeValue(response.data.value);
+  }
+
+  // If not encrypted, return directly
+  return response.data;
 };
