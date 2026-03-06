@@ -236,8 +236,7 @@ export default function KVKDashboard() {
   const [level, setLevel] = useState('District');
   const [state, setState] = useState('Maharashtra');
   const [district, setDistrict] = useState('Pune');
-  const [subDistrict, setSubDistrict] = useState('Haveli');
-  const [subDistricts, setSubDistricts] = useState<string[]>([]);
+  const [subDistrict, setSubDistrict] = useState('');  const [subDistricts, setSubDistricts] = useState<string[]>([]);
   const [parameter, setParameter] = useState<LayerKey>('ndvi');
   const [season, setSeason] = useState(SEASONS[0]);
   const [date, setDate] = useState('2025-12-01');
@@ -278,11 +277,35 @@ export default function KVKDashboard() {
       fetchLocationData().then(setLocationData).catch(console.error);
     }
   }, [router]);
-  useEffect(() => {
-    const districts = locationData[state] || [];
-    if (!districts.includes(district)) setDistrict(districts[0] || '');
-    fetchSubDistricts(district).then(setSubDistricts);
-  }, [state, district, locationData]);
+useEffect(() => {
+  const districts = locationData[state] || [];
+
+  if (districts.length > 0) {
+    const newDistrict = districts.includes(district)
+      ? district
+      : districts[0];
+
+    if (newDistrict !== district) {
+      setDistrict(newDistrict);
+      setSubDistrict('');
+    }
+
+    fetchSubDistricts(newDistrict).then((data) => {
+      console.log("Auto load subdistricts:", data);
+      setSubDistricts(data);
+    });
+  } else {
+    setDistrict('');
+    setSubDistrict('');
+    setSubDistricts([]);
+  }
+}, [state, locationData]);
+
+useEffect(() => {
+  if (subDistricts.length > 0 && !subDistrict) {
+    setSubDistrict(subDistricts[0]);
+  }
+}, [subDistricts]);
 
   // useEffect(() => {
   //   const subs = getSubDistricts(state, district, locationData);
@@ -315,21 +338,22 @@ export default function KVKDashboard() {
   }, []);
   // 🔽 ADD THIS EXACT BLOCK BELOW district geojson useEffect
   useEffect(() => {
-    if (level !== 'Sub-District') return;
+  if (level !== 'Sub-District') return;
 
-    const fetchSubDistrictGeoJson = async () => {
-      try {
-        const res = await fetch('/geojson/india_subdistrict.geojson');
-        if (!res.ok) throw new Error('Failed to load sub-district geojson');
-        const data = await res.json();
-        setSubDistrictGeoJson(data); // 🔴 THIS NEVER HAPPENED BEFORE
-      } catch (err) {
-        console.error('Sub-district geojson error:', err);
-      }
-    };
+  const fetchSubDistrictGeoJson = async () => {
+    try {
+      const res = await fetch('/geojson/india_subdistrict.geojson');
+      if (!res.ok) throw new Error('Failed to load sub-district geojson');
+      const data = await res.json();
+      console.log("SUBDISTRICT GEOJSON LOADED:", data);
+      setSubDistrictGeoJson(data);
+    } catch (err) {
+      console.error('Sub-district geojson error:', err);
+    }
+  };
 
-    fetchSubDistrictGeoJson();
-  }, [level]);
+  fetchSubDistrictGeoJson();
+}, [level]);
 
   useEffect(() => {
     const generateData = async () => {
@@ -341,23 +365,30 @@ export default function KVKDashboard() {
       // Call farm score API
       try {
         const farmScoreData = await fetchFarmScore(
-          state, 
-          level === 'State' ? undefined : district, 
+          state,
+          level === 'State' ? undefined : district,
+          level === 'Sub-District' ? subDistrict : undefined,
           parameter
         );
-        console.log('Farm score data:', farmScoreData);
-        
+
+        console.log('Farm score data:', farmScoreData); 
         // Use API response data if available
         if (farmScoreData) {
           const config = getParameterConfig(parameter);
-          const apiStats = {
-            extreme: farmScoreData.extreme || [],
-            severe: farmScoreData.severe || [],
-            moderate: farmScoreData.moderate || [],
-            mild: farmScoreData.mild || [],
-            normal: farmScoreData.normal || [],
-            total: [...farmScoreData.extreme, ...farmScoreData.severe, ...farmScoreData.moderate, ...farmScoreData.mild, ...farmScoreData.normal],
-          };
+          const extreme = (farmScoreData.extreme || []).map((f: any) => ({ ...f, status: 'Extreme' }));
+          const severe = (farmScoreData.severe || []).map((f: any) => ({ ...f, status: 'Severe' }));
+          const moderate = (farmScoreData.moderate || []).map((f: any) => ({ ...f, status: 'Moderate' }));
+          const mild = (farmScoreData.mild || []).map((f: any) => ({ ...f, status: 'Mild' }));
+          const normal = (farmScoreData.normal || []).map((f: any) => ({ ...f, status: 'Normal' }));
+
+        const apiStats = {
+          extreme,
+          severe,
+          moderate,
+          mild,
+          normal,
+          total: [...extreme, ...severe, ...moderate, ...mild, ...normal],
+        };
           
           setStats(apiStats);
           setChartData({
@@ -457,20 +488,25 @@ export default function KVKDashboard() {
 
   const axisLabels = getParameterAxisLabels(parameter);
   const filteredSubDistrictGeoJson =
-    level === 'Sub-District' && subDistrictGeoJson
-      ? {
-          ...subDistrictGeoJson,
-          features: subDistrictGeoJson.features.filter((f: any) => {
-            const p = f.properties || {};
-            const sName = p.ST_NAME || p.st_nm || p.NAME_1 || '';
-            const dName = p.DT_NAME || p.district || p.NAME_2 || '';
-            return (
-              sName.toLowerCase() === state.toLowerCase() &&
-              dName.toLowerCase() === district.toLowerCase()
-            );
-          }),
-        }
-      : null;
+  level === 'Sub-District' && subDistrictGeoJson
+    ? {
+        ...subDistrictGeoJson,
+        features: subDistrictGeoJson.features.filter((f: any) => {
+          const p = f.properties || {};
+
+          const sName = p.NAME_1 || p.ST_NAME || '';
+          const dName = p.NAME_2 || p.DT_NAME || '';
+          const subName =
+            p.NAME_3 || p.sub_district || p.tehsil || p.taluk || '';
+
+          return (
+            sName.toLowerCase().trim() === state.toLowerCase().trim() &&
+            dName.toLowerCase().trim() === district.toLowerCase().trim() &&
+            subName.toLowerCase().trim() === subDistrict.toLowerCase().trim()
+          );
+        }),
+      }
+    : null;
   console.log('detailedData:', detailedData);
   return (
     <div className="flex flex-col h-screen bg-gray-50 font-sans text-gray-900 overflow-hidden">
@@ -597,8 +633,10 @@ export default function KVKDashboard() {
               <select
                 value={district}
                 onChange={(e) => {
-                  setDistrict(e.target.value);
-                  fetchSubDistricts(district);
+                  const selected = e.target.value;
+                  setDistrict(selected);
+                  setSubDistrict(''); // 🔥 RESET HERE
+                  fetchSubDistricts(selected).then(setSubDistricts);
                 }}
                 className={`${TAB_SELECT} ${level === 'State' ? 'cursor-not-allowed' : ''}`}
                 disabled={level === 'State'}
@@ -618,7 +656,7 @@ export default function KVKDashboard() {
           </div>
 
           <div
-            className={`${TAB_RECTANGLE} flex-1 min-w-[140px] group transition-all ${level !== 'Sub-District' ? 'bg-gray-50 opacity-60' : ''}`}
+            className={`${TAB_RECTANGLE} flex-1 min-w-[140px] group transition-all ${level !== 'Sub-District' ? 'bg-gray-50 ' : ''}`}
           >
             <label className={TAB_LABEL}>
               <MapPin size={10} className="text-gray-400" /> Sub-Dist
@@ -628,8 +666,10 @@ export default function KVKDashboard() {
                 value={subDistrict}
                 onChange={(e) => setSubDistrict(e.target.value)}
                 className={`${TAB_SELECT} ${level !== 'Sub-District' ? 'cursor-not-allowed' : ''}`}
-                disabled={level !== 'Sub-District'}
+                disabled={false}
               >
+                <option value="">Select Sub-District</option>
+
                 {subDistricts.map((sd) => (
                   <option key={sd} value={sd}>
                     {sd}
@@ -832,8 +872,8 @@ export default function KVKDashboard() {
                           : 5.5
                     }
                   />
-                  {geoJsonData && (
-                    <GeoJSON
+                  {level !== 'Sub-District' && geoJsonData && (
+                   <GeoJSON
                       key={`${state}-${level}-${district}-${subDistrict}`}
                       data={geoJsonData}
                       style={(feature) => {
@@ -865,11 +905,12 @@ export default function KVKDashboard() {
                             };
                         }
 
-                        const region = detailedData.find(
-                          (d) =>
-                            d.name.toLowerCase() ===
-                            (featDist || '').toLowerCase(),
-                        );
+                        const region = stats.total.find((d: any) => {
+                          const sub = String(d.village || '').toLowerCase();
+                          const name = p.NAME_3 || p.tehsil || p.sub_district || p.taluk || '';
+                          const geo = String(name || '').toLowerCase();
+                          return sub === geo;
+                        });
                         let color = '#16a34a';
                         if (region) {
                           if (region.status === 'Extreme') color = '#7f1d1d';
@@ -920,50 +961,12 @@ export default function KVKDashboard() {
                   )}
                   {level === 'Sub-District' && filteredSubDistrictGeoJson && (
                     <GeoJSON
-                      key={`${state}-${district}-sub`}
                       data={filteredSubDistrictGeoJson}
-                      style={(feature) => {
-                        const p = feature?.properties || {};
-                        const name =
-                          p.TEHSIL || p.sub_district || p.NAME_3 || '';
-
-                        // Lookup status from detailedData
-                        const region = detailedData.find(
-                          (d) => d.name.toLowerCase() === name.toLowerCase(),
-                        );
-                        let color = '#60a5fa'; // Default Blue fallback
-
-                        if (region) {
-                          if (region.status === 'Extreme') color = '#7f1d1d';
-                          else if (region.status === 'Severe')
-                            color = '#dc2626';
-                          else if (region.status === 'Moderate')
-                            color = '#f97316';
-                          else if (region.status === 'Mild') color = '#facc15';
-                          else color = '#16a34a'; // Normal
-                        }
-
-                        return {
-                          fillColor: color,
-                          weight: 1.2,
-                          color: '#ffffff', // White border for cleanliness
-                          fillOpacity: 0.6,
-                        };
-                      }}
-                      onEachFeature={(feature, layer) => {
-                        const name =
-                          feature.properties?.SUBDISTRICT ||
-                          feature.properties?.TEHSIL ||
-                          feature.properties?.TALUK ||
-                          feature.properties?.NAME_3;
-
-                        if (name) {
-                          layer.bindTooltip(name, {
-                            permanent: true,
-                            direction: 'center',
-                            className: 'map-label',
-                          });
-                        }
+                      style={{
+                        fillColor: 'blue',
+                        weight: 2,
+                        color: 'white',
+                        fillOpacity: 0.6,
                       }}
                     />
                   )}
