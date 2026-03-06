@@ -302,15 +302,27 @@ export default function SoilPage() {
     },
   ];
 
-  const phBars = (level?: string) => [
-    {
-      label: 'Alkaline',
-      val: level === 'Alkaline' ? 100 : 0,
-      color: '#9333ea',
-    },
-    { label: 'Neutral', val: level === 'Neutral' ? 100 : 0, color: '#22c55e' },
-    { label: 'Acidic', val: level === 'Acidic' ? 100 : 0, color: '#facc15' },
+  const phBars = (value?: number) => {
+  if (typeof value !== "number") {
+    return [
+      { label: "Alkaline", val: 0, color: "#9333ea" },
+      { label: "Neutral", val: 0, color: "#22c55e" },
+      { label: "Acidic", val: 0, color: "#facc15" },
+    ];
+  }
+
+  let level = "";
+
+  if (value < 6.5) level = "Acidic";
+  else if (value <= 7.5) level = "Neutral";
+  else level = "Alkaline";
+
+  return [
+    { label: "Alkaline", val: level === "Alkaline" ? 100 : 0, color: "#9333ea" },
+    { label: "Neutral", val: level === "Neutral" ? 100 : 0, color: "#22c55e" },
+    { label: "Acidic", val: level === "Acidic" ? 100 : 0, color: "#facc15" },
   ];
+};
 
   const ecBars = (level?: string) => [
     {
@@ -929,9 +941,9 @@ const normalizeMicroStatus = (s?: string) => {
                           label="pH Level"
                           myValue={vals.pH}
                           unit=""
-                          bars={phBars(stats?.pH?.label)}
+                          bars={phBars(Number(vals.pH))}
                         />
-
+                         
                         <NutrientGroupRow
                           label="Elec. Conductivity"
                           myValue={vals.EC}
