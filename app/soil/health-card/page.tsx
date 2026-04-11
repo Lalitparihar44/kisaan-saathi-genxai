@@ -133,6 +133,10 @@ function getRating(param: string, value: number | null) {
   if (value === null || value === undefined) return "N/A";
 
   switch (param) {
+    case "pH":
+      if (value < 6.5) return "Acidic";
+      if (value <= 7.5) return "Neutral";
+      return "Alkaline";
     case "EC":
       if (value < 0.8) return "Normal";
       if (value <= 2) return "Slightly Saline";
@@ -170,6 +174,7 @@ export default function SoilHealthCardPage() {
   const [data, setData] = useState<HealthCardData>(INITIAL_DATA);
   const [soil, setSoil] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const componentRef = useRef<HTMLDivElement>(null);
 
@@ -237,16 +242,6 @@ export default function SoilHealthCardPage() {
     console.log("MOBILE:", soil?.mobile_number);
   }, [soil]);
 
-  useEffect(() => {
-    const source = data.sampleDate || sampleDate || new Date().toISOString().slice(0, 10);
-    const validity = getValidityFromSampleDate(source);
-    if (!validity.from || !validity.to) return;
-    setData((prev) => {
-      if (prev.validFrom === validity.from && prev.validTo === validity.to) return prev;
-      return { ...prev, validFrom: validity.from, validTo: validity.to };
-    });
-  }, [data.sampleDate, sampleDate]);
-
   const captureMapWithRetry = (
     map: any,
     setImage: (value: string) => void,
@@ -263,8 +258,8 @@ export default function SoilHealthCardPage() {
         const canvas = map.getCanvas();
         const dataUrl = canvas.toDataURL("image/png", 1.0);
         if (dataUrl && dataUrl.length > 10000) {
-          setImage(dataUrl);
           capturedRef.current = true;
+          setImage(dataUrl);
           return;
         }
       } catch (err) {
@@ -276,9 +271,15 @@ export default function SoilHealthCardPage() {
       }
     };
 
-    // Capture once after map settles, then retry if needed.
-    map.once("idle", () => setTimeout(tryCapture, 250));
-    setTimeout(tryCapture, 500);
+    // Single entry point — idle fires first, setTimeout is a fallback only
+    let idleFired = false;
+    map.once("idle", () => {
+      idleFired = true;
+      setTimeout(tryCapture, 250);
+    });
+    setTimeout(() => {
+      if (!idleFired) tryCapture();
+    }, 800);
   };
 
   useEffect(() => {
@@ -294,11 +295,16 @@ export default function SoilHealthCardPage() {
   ]);
 
   useEffect(() => {
-    // Inject html2pdf script dynamically for Direct Download functionality
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
-    script.async = true;
-    document.body.appendChild(script);
+    // Inject html2pdf script dynamically — guard against double-inject (React strict mode)
+    const SCRIPT_ID = "html2pdf-script";
+    let script: HTMLScriptElement | null = null;
+    if (!document.getElementById(SCRIPT_ID)) {
+      script = document.createElement("script");
+      script.id = SCRIPT_ID;
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
+      script.async = true;
+      document.body.appendChild(script);
+    }
 
     const fetchData = async () => {
       try {
@@ -429,31 +435,28 @@ const normalizedOverview =
     if (!predictionBlock?.predictions && base?.predictions) {
       predictionBlock = {
         predictions: base.predictions,
-        stats: base.stats || {},
-        forecast7d: base.forecast7d || base.forecast || [],
-        soilLayers: base.soilLayers || [],
-        moistureLayers: base.moistureLayers || [],
-        tempInsight: base.tempInsight,
-        moistInsight: base.moistInsight,
-        tempActions: base.tempActions || [],
-        moistActions: base.moistActions || [],
+        stats: predictionBlock?.stats || base.stats || {},
+        forecast7d: predictionBlock?.forecast7d?.length ? predictionBlock.forecast7d : (base.forecast7d || base.forecast || []),
+        soilLayers: predictionBlock?.soilLayers?.length ? predictionBlock.soilLayers : (base.soilLayers || []),
+        moistureLayers: predictionBlock?.moistureLayers?.length ? predictionBlock.moistureLayers : (base.moistureLayers || []),
+        tempInsight: predictionBlock?.tempInsight ?? base.tempInsight,
+        moistInsight: predictionBlock?.moistInsight ?? base.moistInsight,
+        tempActions: predictionBlock?.tempActions?.length ? predictionBlock.tempActions : (base.tempActions || []),
+        moistActions: predictionBlock?.moistActions?.length ? predictionBlock.moistActions : (base.moistActions || []),
       };
     }
 
     if (!predictionBlock?.predictions && predictionRes?.predictions) {
       predictionBlock = {
         predictions: predictionRes.predictions,
-        stats: predictionRes.stats || predictionRes.data?.stats || {},
-        forecast7d:
-          predictionRes.forecast7d || predictionRes.data?.forecast7d || [],
-        soilLayers:
-          predictionRes.soilLayers || predictionRes.data?.soilLayers || [],
-        moistureLayers:
-          predictionRes.moistureLayers || predictionRes.data?.moistureLayers || [],
-        tempInsight: predictionRes.tempInsight || predictionRes.data?.tempInsight,
-        moistInsight: predictionRes.moistInsight || predictionRes.data?.moistInsight,
-        tempActions: predictionRes.tempActions || predictionRes.data?.tempActions || [],
-        moistActions: predictionRes.moistActions || predictionRes.data?.moistActions || [],
+        stats: predictionBlock?.stats || predictionRes.stats || predictionRes.data?.stats || {},
+        forecast7d: predictionBlock?.forecast7d?.length ? predictionBlock.forecast7d : (predictionRes.forecast7d || predictionRes.data?.forecast7d || []),
+        soilLayers: predictionBlock?.soilLayers?.length ? predictionBlock.soilLayers : (predictionRes.soilLayers || predictionRes.data?.soilLayers || []),
+        moistureLayers: predictionBlock?.moistureLayers?.length ? predictionBlock.moistureLayers : (predictionRes.moistureLayers || predictionRes.data?.moistureLayers || []),
+        tempInsight: predictionBlock?.tempInsight ?? predictionRes.tempInsight ?? predictionRes.data?.tempInsight,
+        moistInsight: predictionBlock?.moistInsight ?? predictionRes.moistInsight ?? predictionRes.data?.moistInsight,
+        tempActions: predictionBlock?.tempActions?.length ? predictionBlock.tempActions : (predictionRes.tempActions || predictionRes.data?.tempActions || []),
+        moistActions: predictionBlock?.moistActions?.length ? predictionBlock.moistActions : (predictionRes.moistActions || predictionRes.data?.moistActions || []),
       };
     }
 
@@ -845,7 +848,7 @@ const normalizedOverview =
           gpsLong: fieldDetails.gpsLong,
 
           ...adaptedHealthCardData,
-          sampleDate: String(sampleDetails.date || cardGeneratedDate || ""),
+          sampleDate: String(adaptedHealthCardData.sampleDate || sourceSampleDate || ""),
           farmSize: String(sampleDetails.farmSize || farmSizeDisplay || ""),
           irrigationType: String(sampleDetails.irrigation || irrigationType || ""),
           testResults: adaptedTestResults,
@@ -943,6 +946,7 @@ const normalizedOverview =
 
       } catch (e) {
         console.error("Health-card backend fetch failed", e);
+        setFetchError("Failed to load soil health card data. Please try again.");
       } finally {
         setLoading(false);
       }
@@ -950,9 +954,9 @@ const normalizedOverview =
     fetchData();
 
     return () => {
-      if (script.parentNode) script.parentNode.removeChild(script);
+      if (script && script.parentNode) script.parentNode.removeChild(script);
     }
-  }, []);
+  }, [sampleDate]);
 
   // --- Print Handler ---
   const handlePrint = useReactToPrint({
@@ -1053,7 +1057,17 @@ const normalizedOverview =
       newArray[index] = { ...newArray[index], [field]: value }; return { ...prev, [arrayName]: newArray }; }); };
 
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><Loader2 className="w-8 h-8 animate-spin text-green-700" /></div>;
-  if (!soil) return null;
+  if (fetchError) return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 gap-4">
+      <p className="text-red-600 font-semibold text-sm">{fetchError}</p>
+      <button onClick={() => window.location.reload()} className="px-4 py-2 bg-green-700 text-white rounded text-sm font-bold hover:bg-green-800">Retry</button>
+    </div>
+  );
+  if (!soil) return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <p className="text-gray-500 text-sm">No soil data available.</p>
+    </div>
+  );
 
   return (
     <div className="h-screen w-full overflow-auto bg-gradient-to-br from-slate-100 via-emerald-50 to-cyan-50 p-4 md:p-8 text-black">
