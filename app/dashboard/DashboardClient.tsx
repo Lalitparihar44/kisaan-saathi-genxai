@@ -10,6 +10,72 @@ import ActionCenter from "./components/ActionCenter";
 import { useDiseaseId } from "../../lib/hooks/dashboard";
 import { fetchSoilData } from "@/lib/soil";
 
+const SOIL_CACHE_NAMESPACE = "soil-page-realtime-cache:v1";
+
+function getCachedSoilResponse(fieldId: string) {
+  if (typeof window === "undefined" || !fieldId) return null;
+
+  try {
+    const cachedKey = localStorage.getItem(`${SOIL_CACHE_NAMESPACE}:index:${fieldId}`);
+    if (!cachedKey) return null;
+
+    const raw = localStorage.getItem(cachedKey);
+    if (!raw) return null;
+
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error("Failed to read soil cache", error);
+    return null;
+  }
+}
+
+function getMostRecentSoilCache() {
+  if (typeof window === "undefined") return null;
+
+  const selectedFieldId = localStorage.getItem("selectedFieldId") || "";
+  const cachedByField = getCachedSoilResponse(selectedFieldId);
+  if (cachedByField) return cachedByField;
+
+  try {
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (!key || !key.startsWith(SOIL_CACHE_NAMESPACE) || key.includes(":index:")) {
+        continue;
+      }
+
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+
+      return JSON.parse(raw);
+    }
+  } catch (error) {
+    console.error("Failed to find latest soil cache", error);
+  }
+
+  return null;
+}
+
+function cacheSoilResponse(fieldId: string, soilJson: any) {
+  if (typeof window === "undefined" || !fieldId) return;
+
+  try {
+    const response = soilJson?.data || soilJson;
+    const cacheKey = `${SOIL_CACHE_NAMESPACE}:${fieldId}:latest`;
+    localStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        fieldId,
+        lat: response?.lat ?? null,
+        lon: response?.lon ?? null,
+        soilJson,
+      })
+    );
+    localStorage.setItem(`${SOIL_CACHE_NAMESPACE}:index:${fieldId}`, cacheKey);
+  } catch (error) {
+    console.error("Failed to save soil cache", error);
+  }
+}
+
 export default function DashboardClient() {
   const router = useRouter();
   const [showMenu, setShowMenu] = useState(false);
@@ -18,27 +84,77 @@ export default function DashboardClient() {
   const [soilMoisture7d, setSoilMoisture7d] = useState<number[]>([]);
   const [avgSoilMoisture, setAvgSoilMoisture] = useState<number | null>(null);
   const [severity, setSeverity] = useState<string>("");
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+
+  const applySoilResponse = (soilJson: any) => {
+    const normalizedData =
+      soilJson?.data && typeof soilJson.data === 'object'
+        ? soilJson.data
+        : soilJson;
+    const forecast = normalizedData?.prediction?.forecast7d ?? [];
+
+    setSoilMoisture7d(
+      forecast
+        .map((x: any) => x?.moisture)
+        .filter((v: any) => typeof v === "number" && !Number.isNaN(v))
+    );
+    const todayMoisture = forecast.find((x: any) => x?.day == "Today")?.moisture;
+    const fallbackMoisture = forecast.find((x: any) => typeof x?.moisture === "number")?.moisture;
+    const resolvedMoisture =
+      typeof todayMoisture === "number" && !Number.isNaN(todayMoisture)
+        ? todayMoisture
+        : typeof fallbackMoisture === "number" && !Number.isNaN(fallbackMoisture)
+          ? fallbackMoisture
+          : null;
+    setAvgSoilMoisture(resolvedMoisture !== null ? Math.round(resolvedMoisture) : null);
+    setSeverity(normalizedData?.prediction?.moistInsight?.severity ?? "");
+  };
 
   useEffect(() => {
-    // Initialize effect if needed
-    fetchSoil();
+  const cachedSoil = getMostRecentSoilCache();
+  if (cachedSoil) {
+    applySoilResponse(cachedSoil.soilJson);
+  }
+
+  fetchSoil();
+
+  // clear old selection when dashboard opens
+  localStorage.removeItem("selectedSceneDate");
+}, []);
+
+  useEffect(() => {
+    const handleStorageChange = (event: StorageEvent) => {
+      if (!event.key || event.key === "selectedFieldId") {
+        fetchSoil();
+      }
+    };
+
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("focus", fetchSoil);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("focus", fetchSoil);
+    };
   }, []);
 
   /* -------------------- Weather Fetcher -------------------- */
   
   async function fetchSoil() {
-    const backendData = await fetchSoilData();
-    setSoilMoisture7d(
-      backendData?.prediction?.forecast7d.map((x: any) => x?.moisture ?? 0) ??
-        []
-    );
-    setAvgSoilMoisture(
-      Math.round(
-        backendData?.prediction?.forecast7d.find((x: any) => x?.day == "Today")
-          ?.moisture ?? 0
-      )
-    );
-    setSeverity(backendData?.prediction?.moistInsight.severity ?? "");
+    try {
+      const selectedFieldId = localStorage.getItem('selectedFieldId') || '';
+      const backendData = await fetchSoilData(selectedFieldId);
+      applySoilResponse(backendData);
+      if (selectedFieldId) {
+        cacheSoilResponse(selectedFieldId, backendData);
+      }
+    } catch (error: any) {
+      console.error("Soil overview fetch failed:", error);
+      setSoilMoisture7d([]);
+      setAvgSoilMoisture(null);
+      setSeverity("");
+      toast.error("Unable to load soil overview right now.");
+    }
   }
   useEffect(() => {
     const token = globalThis.window
@@ -146,7 +262,7 @@ export default function DashboardClient() {
             </div>
           </header>
 
-          <FarmScoreCard severity={severity} avgSoilMoisture={avgSoilMoisture} soilMoisture7d={soilMoisture7d} selectedDate="selectedDate" />
+          <FarmScoreCard severity={severity} avgSoilMoisture={avgSoilMoisture} soilMoisture7d={soilMoisture7d} selectedDate={selectedDate} />
           <ActionCenter onDiseaseClick={handleIdentifyDisease} severity={severity} avgSoilMoisture={avgSoilMoisture} soilMoisture7d={soilMoisture7d}/>
           {/* <SensorMetrics /> */}
           {/* <CropOverview /> */}

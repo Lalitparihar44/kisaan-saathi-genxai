@@ -58,16 +58,15 @@ function Modal({
     <div
       style={{
         position: 'fixed',
-        top: 0,
-        left: 0,
-        width: '100vw',
-        height: '100vh',
+        inset: 0,
         background: 'rgba(0,0,0,0.3)',
         zIndex: 100001,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
+        padding: 16,
       }}
+      onClick={onClose}
     >
       <div
         style={{
@@ -79,6 +78,7 @@ function Modal({
           maxWidth: '95vw',
           boxShadow: '0 2px 12px rgba(0,0,0,0.18)',
         }}
+        onClick={(e) => e.stopPropagation()}
       >
         {children}
       </div>
@@ -97,7 +97,6 @@ const FarmMap: React.FC<FarmMapProps> = ({
 }) => {
   const hasFittedRef = useRef(false);
 
-  // Modal state for new field
   const [showFieldModal, setShowFieldModal] = useState(false);
   const [pendingGeometry, setPendingGeometry] = useState<
     GeoJSON.Polygon | GeoJSON.MultiPolygon | null
@@ -107,24 +106,27 @@ const FarmMap: React.FC<FarmMapProps> = ({
     crop_name: '',
     notes: '',
     sowing_date: '',
+    soil_type: '',
+    fertilizer: '',
+    irrigation: '',
+    rainfall_pattern: '',
   });
+  const [soilType, setSoilType] = useState('Loamy');
+  const [fertilizer, setFertilizer] = useState('Medium');
+  const [irrigation, setIrrigation] = useState('Moderate');
+  const [rainfallPattern, setRainfallPattern] = useState('Moderate');
   const [saving, setSaving] = useState(false);
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const [selectedLayer, setSelectedLayer] = useState<LayerKey>(initialLayer);
-  const [selectedField, setSelectedField] = useState<SelectedField | null>(
-    null,
-  );
-  const [selectedDate, setSelectedDate] = useState<string>(
-    TIMELINE_DATES[TIMELINE_DATES.length - 1],
-  );
+  const [selectedField, setSelectedField] = useState<SelectedField | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string>(TIMELINE_DATES[TIMELINE_DATES.length - 1]);
   const [isLoadingHeatmap, setIsLoadingHeatmap] = useState(false);
   const [fields, setFields] = useState<FieldFeature[]>([]);
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [layerDropdownOpen, setLayerDropdownOpen] = useState(false);
   const [sourceDropdownOpen, setSourceDropdownOpen] = useState(false);
-  const [availableDates, setAvailableDates] =
-    useState<string[]>(TIMELINE_DATES);
+  const [availableDates, setAvailableDates] = useState<string[]>(TIMELINE_DATES);
   const [calendarDates, setCalendarDates] = useState<string[]>([]);
   const [nextImageDate, setNextImageDate] = useState<string | null>(null);
   const [isLoadingScenes, setIsLoadingScenes] = useState(false);
@@ -141,9 +143,38 @@ const FarmMap: React.FC<FarmMapProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenRef = useRef<HTMLDivElement | null>(null);
 
+  useEffect(() => {
+    if (!showFieldModal) return;
+    setSoilType(form.soil_type || 'Loamy');
+    setFertilizer(form.fertilizer || 'Medium');
+    setIrrigation(form.irrigation || 'Moderate');
+    setRainfallPattern(form.rainfall_pattern || 'Moderate');
+  }, [showFieldModal, form.soil_type, form.fertilizer, form.irrigation, form.rainfall_pattern]);
+
+  const normalizeEnumValue = (
+    value: string,
+    allowed: string[],
+    fallback: string,
+    aliases: Record<string, string> = {},
+  ) => {
+    const raw = (value || '').trim();
+    const aliasMatch = aliases[raw.toLowerCase()];
+    if (aliasMatch && allowed.includes(aliasMatch)) return aliasMatch;
+    const directMatch = allowed.find((x) => x.toLowerCase() === raw.toLowerCase());
+    return directMatch || fallback;
+  };
+
   // State for print/PDF mode map snapshot
   const [mapImage, setMapImage] = useState<string | null>(null);
   const [isPrinting, setIsPrinting] = useState(false);
+
+  useEffect(() => {
+    if (!showFieldModal) return;
+    setSoilType(form.soil_type || 'Loamy');
+    setFertilizer(form.fertilizer || 'Medium');
+    setIrrigation(form.irrigation || 'Moderate');
+    setRainfallPattern(form.rainfall_pattern || 'Moderate');
+  }, [showFieldModal, form.soil_type, form.fertilizer, form.irrigation, form.rainfall_pattern]);
 
   // =======================
   // Measure Distance State
@@ -247,13 +278,14 @@ const FarmMap: React.FC<FarmMapProps> = ({
           fromDate: '2022-01-01', // full history
         });
 
-        const allDates = response.scenes.map((s: SatelliteScene) => s.date);
+        const scenes = Array.isArray(response?.scenes) ? response.scenes : [];
+        const allDates = scenes.map((s: SatelliteScene) => s.date);
 
         // FULL calendar
         setCalendarDates(allDates);
 
         // LAST N for timeline
-        const recentDates = allDates.slice(-8);
+        const recentDates = allDates.slice(-14);
         setAvailableDates(recentDates);
 
         // auto select latest
@@ -280,7 +312,8 @@ const FarmMap: React.FC<FarmMapProps> = ({
       const scaleEl = scaleRef.current;
 
       const updateScale = () => {
-        const canvas = map!.getCanvas();
+        const canvas = map?.getCanvas?.();
+        if (!canvas || !canvas.clientHeight) return;
         const widthPx = 100; // EOS reference width
         const y = canvas.clientHeight / 2;
 
@@ -429,7 +462,15 @@ const FarmMap: React.FC<FarmMapProps> = ({
         crop_name: '',
         notes: '',
         sowing_date: '',
+        soil_type: '',
+        fertilizer: '',
+        irrigation: '',
+        rainfall_pattern: 'Moderate',
       });
+      setSoilType('Loamy');
+      setFertilizer('Medium');
+      setIrrigation('Moderate');
+      setRainfallPattern('Moderate');
       setShowFieldModal(true);
     },
   });
@@ -475,6 +516,22 @@ const FarmMap: React.FC<FarmMapProps> = ({
     try {
       const map = mapRef.current;
       const geometry = selectedField.geometry;
+      const areaM2 = turf.area(geometry as any);
+
+      // Dynamic fit tuning by field area: smaller fields get tighter framing.
+      let dynamicPadding = 20;
+      let zoomBoost = 0.8;
+
+      if (areaM2 < 2000) {
+        dynamicPadding = 8;
+        zoomBoost = 1.8;
+      } else if (areaM2 < 8000) {
+        dynamicPadding = 12;
+        zoomBoost = 1.4;
+      } else if (areaM2 < 20000) {
+        dynamicPadding = 16;
+        zoomBoost = 1.1;
+      }
 
       // ✅ robust for Polygon & MultiPolygon
       const bbox = turf.bbox(geometry);
@@ -490,15 +547,16 @@ const FarmMap: React.FC<FarmMapProps> = ({
           [bbox[2], bbox[3]],
         ],
         {
-          padding: 60, // IMPORTANT: stability
+          padding: dynamicPadding,
           duration: 400, // smooth (no jump)
-          maxZoom: 17,
+          maxZoom: 19,
         },
       );
 
       // ✅ lock zoom origin to polygon center
       map.easeTo({
         center,
+        zoom: Math.min((map.getZoom() || 17) + zoomBoost, 19),
         duration: 0,
       });
 
@@ -596,39 +654,84 @@ const FarmMap: React.FC<FarmMapProps> = ({
     e.preventDefault();
     setSaving(true);
     let res;
+    if (!soilType || !fertilizer || !irrigation || !rainfallPattern) {
+      alert('All fields required');
+      setSaving(false);
+      return;
+    }
+    const payload = {
+      ...form,
+      sowing_date: form.sowing_date,
+      soil_type: soilType,
+      fertilizer,
+      irrigation,
+      rainfall_pattern: rainfallPattern,
+    };
+
+    console.log('FIELD PAYLOAD 👉', {
+      soil_type: soilType,
+      fertilizer,
+      irrigation,
+      rainfallPattern,
+    });
+
+    setForm((prev) => ({ ...prev, ...payload }));
+
     try {
       if (editFieldId) {
         // Edit mode
-        res = await updateField(editFieldId, {
-          ...form,
-          sowing_date: form.sowing_date,
-        });
+        res = await updateField(editFieldId, payload);
       } else {
         // Create mode
         if (!pendingGeometry) return;
         res = await createField({
-          ...form,
-          sowing_date: form.sowing_date,
+          ...payload,
           geom: pendingGeometry,
         });
-        const field = res.data;
-        // Calculate indices
-        await calculateIndices(field.id, null, null);
+        const createdFieldId =
+          res?.data?.id ??
+          res?.data?.data?.id ??
+          res?.id ??
+          res?.field?.id ??
+          null;
+
+        // Calculate indices only when the backend returns a usable field id.
+        if (createdFieldId) {
+          await calculateIndices(createdFieldId, null, null);
+        } else {
+          console.warn('Create field response did not include a field id:', res);
+        }
       }
-      setShowFieldModal(false);
-      setPendingGeometry(null);
-      setEditFieldId(null);
-      setForm({
-        name: '',
-        crop_name: '',
-        notes: '',
-        sowing_date: '',
-      });
-      if (res.success) {
+      const saveSucceeded =
+        res?.success === true ||
+        res?.statusCode === 200 ||
+        res?.statusCode === 201 ||
+        !!res?.data?.id ||
+        !!res?.id;
+
+      if (saveSucceeded) {
         await reloadFields();
         toast.success(res.message || 'Field saved successfully');
+
+        setShowFieldModal(false);
+        setPendingGeometry(null);
+        setEditFieldId(null);
+        setForm({
+          name: '',
+          crop_name: '',
+          notes: '',
+          sowing_date: '',
+          soil_type: '',
+          fertilizer: '',
+          irrigation: '',
+          rainfall_pattern: 'Moderate',
+        });
+        setSoilType('Loamy');
+        setFertilizer('Medium');
+        setIrrigation('Moderate');
+        setRainfallPattern('Moderate');
       } else {
-        toast.success(res.message || 'Failed to save field');
+        toast.error(res?.message || 'Failed to save field');
       }
     } catch (err) {
       console.error('Field submit error:', err);
@@ -694,6 +797,7 @@ const FarmMap: React.FC<FarmMapProps> = ({
         if (selectedLayer === 'todays_image') {
           renderTodaysImage(mapRef.current, selectedFieldData);
         } else {
+          if (!mapRef.current || !mapRef.current.isStyleLoaded()) return;
           await renderHeatmap(
             mapRef.current,
             selectedFieldData,
@@ -751,13 +855,57 @@ const FarmMap: React.FC<FarmMapProps> = ({
     }
   };
 
-  const handleLayerChange = useCallback((layer: LayerKey) => {
+  const handleLayerChange = useCallback(async (layer: LayerKey) => {
     setSelectedLayer(layer);
-  }, []);
+
+    const map = mapRef.current;
+    if (!map) return;
+
+    const fallbackFieldFeature = fields.find((f) => f.properties?.is_selected) ?? fields[0];
+    const activeField: SelectedField | null = selectedField
+      ? selectedField
+      : fallbackFieldFeature
+        ? {
+            id: fallbackFieldFeature.properties.id,
+            properties: fallbackFieldFeature.properties,
+            geometry: fallbackFieldFeature.geometry,
+          }
+        : null;
+
+    if (!activeField) return;
+    if (!selectedField) {
+      setSelectedField(activeField);
+    }
+
+    if (layer === 'todays_image') {
+      await renderTodaysImage(map, activeField);
+      return;
+    }
+
+    if (!map.isStyleLoaded()) return;
+    await renderHeatmap(map, activeField, selectedDate, layer, true);
+  }, [fields, mapRef, selectedField, selectedDate, renderHeatmap, renderTodaysImage]);
 
   const handleDateChange = useCallback((date: string) => {
     setSelectedDate(date);
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !selectedField) return;
+
+    const renderSelectedFieldScene = async () => {
+      if (selectedLayer === 'todays_image') {
+        await renderTodaysImage(map, selectedField);
+        return;
+      }
+
+      if (!map.isStyleLoaded()) return;
+      await renderHeatmap(map, selectedField, selectedDate, selectedLayer, true);
+    };
+
+    renderSelectedFieldScene();
+  }, [selectedLayer, selectedDate, selectedField, mapRef, renderHeatmap, renderTodaysImage]);
 
   return (
     <div ref={fullscreenRef} className="flex flex-col h-full">
@@ -918,6 +1066,68 @@ const FarmMap: React.FC<FarmMapProps> = ({
             </label>
           </div>
 
+          <div className="mb-3">
+            <label className="block">
+              Soil Type
+              <select
+                value={soilType}
+                onChange={(e) => setSoilType(e.target.value)}
+                className="w-full mt-1 rounded border border-gray-300 p-2"
+              >
+                <option value="">Select soil type</option>
+                <option value="Sandy">Sandy</option>
+                <option value="Loamy">Loamy</option>
+                <option value="Clayey">Clayey</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="mb-3">
+            <label className="block">
+              Irrigation
+              <select
+                value={irrigation}
+                onChange={(e) => setIrrigation(e.target.value)}
+                className="w-full mt-1 rounded border border-gray-300 p-2"
+              >
+                <option value="Rainfed">Rainfed</option>
+                <option value="Moderate">Moderate</option>
+                <option value="Heavy">Heavy</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="mb-3">
+            <label className="block">
+              Fertilizer
+              <select
+                value={fertilizer}
+                onChange={(e) => setFertilizer(e.target.value)}
+                className="w-full mt-1 rounded border border-gray-300 p-2"
+              >
+                <option value="">Select fertilizer level</option>
+                <option value="Low">Low</option>
+                <option value="Medium">Medium</option>
+                <option value="High">High</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="mb-3">
+            <label className="block">
+              Rainfall Pattern
+              <select
+                value={rainfallPattern}
+                onChange={(e) => setRainfallPattern(e.target.value)}
+                className="w-full mt-1 rounded border border-gray-300 p-2"
+              >
+                <option value="Low">Low</option>
+                <option value="Moderate">Moderate</option>
+                <option value="High">High</option>
+                <option value="Irregular">Irregular</option>
+              </select>
+            </label>
+          </div>
           {/* notes */}
           <div className="mb-3">
             <label className="block">
@@ -1015,6 +1225,7 @@ const FarmMap: React.FC<FarmMapProps> = ({
                 setSourceDropdownOpen(false);
               }}
             />
+            {/*
             <div className="hidden sm:block">
               <MapSourceDropdown
                 selectedSource={'sentinel2'}
@@ -1027,6 +1238,7 @@ const FarmMap: React.FC<FarmMapProps> = ({
                 }}
               />
             </div>
+            */}
           </div>
         </div>
       )}
@@ -1158,7 +1370,7 @@ const FarmMap: React.FC<FarmMapProps> = ({
             </div>
           )}
 
-          {/* Map legend in the left bottom corner */}
+          {/* Map legend overlay */}
           {showLegend && !healthCard && (
             <MapLegend selectedLayer={selectedLayer} />
           )}
@@ -1216,6 +1428,7 @@ const FarmMap: React.FC<FarmMapProps> = ({
           `}</style>
         </div>
       </div>
+      
       {!healthCard && (
         <Timeline
           dates={availableDates}

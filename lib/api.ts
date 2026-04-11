@@ -62,12 +62,31 @@ export async function fetchFields(): Promise<FieldCollection> {
         },
       });
     });
-    if (res.statusCode === 200 && res.data) {
-      return res.data;
-   }else {
-      toast.error(res.message || 'Failed to fetch fields');
-      return res;
+
+    // Backend can return direct FeatureCollection OR wrapped envelope.
+    const candidate =
+      (res as any)?.data?.data ??
+      (res as any)?.data ??
+      (res as any);
+
+    if (candidate?.type === 'FeatureCollection' && Array.isArray(candidate?.features)) {
+      return candidate as FieldCollection;
     }
+
+    const features = Array.isArray(candidate?.features)
+      ? candidate.features
+      : Array.isArray((res as any)?.features)
+        ? (res as any).features
+        : [];
+
+    if (!features.length) {
+      toast.error((res as any)?.message || 'Failed to fetch fields');
+    }
+
+    return {
+      type: 'FeatureCollection',
+      features,
+    };
   } catch (error: any) {
     toast.error('Failed to fetch fields');
     console.log('Fetch fields error', error);
@@ -106,6 +125,10 @@ export async function createField(data: {
   crop_name?: string;
   notes?: string;
   sowing_date?: string;
+  soil_type?: string;
+  fertilizer?: string;
+  irrigation?: string;
+  rainfall_pattern?: string;
   geom: GeoJSON.Polygon | GeoJSON.MultiPolygon;
 }): Promise<any> {
   try {
@@ -227,6 +250,10 @@ export async function updateField(
     crop_name?: string;
     notes?: string;
     sowing_date?: string;
+    soil_type?: string;
+    fertilizer?: string;
+    irrigation?: string;
+    rainfall_pattern?: string;
   },
 ): Promise<void> {
   try {
@@ -350,7 +377,15 @@ export async function fetchScenes(options?: {
       });
     });
     console.log('Scenes response', res);
-    return res.data;
+
+    // Different endpoints in this project return either { data: ... } or the payload directly.
+    const payload = res?.data ?? res;
+
+    if (payload && Array.isArray(payload.scenes)) {
+      return payload as ScenesResponse;
+    }
+
+    return generateFallbackScenes();
   } catch (error: any) {
     // Return fallback dates on error
     return generateFallbackScenes();

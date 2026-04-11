@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -26,7 +26,14 @@ import {
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import FarmMap from '@/components/ui/farm-map';
-import { fetchSoilData, fetchFertilizerRecommendation } from '@/lib/soil';
+import { fetchFieldById } from '@/lib/api';
+import {
+  fetchSoilData,
+  fetchFertilizerRecommendation,
+  fetchSoilByDate,
+  predictSoil,
+  predictSoilByFieldId,
+} from '@/lib/soil';
 
 ChartJS.register(
   CategoryScale,
@@ -128,11 +135,13 @@ function ActionCard({
           {desc}
         </div>
       </div>
+      {/*
       <button
         className={`mt-auto w-full h-[28px] rounded text-[10px] font-bold ${s.btn} transition-colors`}
       >
         {cta}
       </button>
+      */}
     </div>
   );
 }
@@ -260,9 +269,172 @@ const DonutChart = ({
   );
 };
 
+const LEVEL_STYLE = {
+  Low: { badge: 'bg-red-100 text-red-700', pointer: '15%' },
+  Sufficient: { badge: 'bg-yellow-100 text-yellow-700', pointer: '50%' },
+  High: { badge: 'bg-green-100 text-green-700', pointer: '85%' },
+} as const;
+
+type NutrientLevel = keyof typeof LEVEL_STYLE;
+
+const RANGE_SOURCE_URL =
+  'https://iiss.res.in/old/eMagazine/v4i1/12.pdf';
+
+const NUTRIENT_RANGES: Record<string, { lowMax: number; sufficientMax: number }> = {
+  N: { lowMax: 280, sufficientMax: 560 },
+  P: { lowMax: 10, sufficientMax: 25 },
+  K: { lowMax: 120, sufficientMax: 280 },
+  OC: { lowMax: 0.5, sufficientMax: 0.75 },
+  S: { lowMax: 10, sufficientMax: Number.POSITIVE_INFINITY },
+  Zn: { lowMax: 0.6, sufficientMax: Number.POSITIVE_INFINITY },
+  B: { lowMax: 0.5, sufficientMax: Number.POSITIVE_INFINITY },
+  Fe: { lowMax: 4.5, sufficientMax: Number.POSITIVE_INFINITY },
+  Mn: { lowMax: 2, sufficientMax: Number.POSITIVE_INFINITY },
+  Cu: { lowMax: 0.2, sufficientMax: Number.POSITIVE_INFINITY },
+  pH: { lowMax: 6.5, sufficientMax: 7.0 },
+  EC: { lowMax: 2.0, sufficientMax: 4.0 },
+};
+
+const NUTRIENT_RANGE_TEXT: Record<
+  string,
+  {
+    low: string;
+    medium: string;
+    high: string;
+    middleLabel?: string;
+    highLabel?: string;
+  }
+> = {
+  N: { low: '< 280', medium: '280 - 560', high: '> 560' },
+  P: { low: '< 10', medium: '10 - 25', high: '> 25' },
+  K: { low: '< 120', medium: '120 - 280', high: '> 280' },
+  OC: { low: '< 0.50', medium: '0.50 - 0.75', high: '> 0.75' },
+  pH: {
+    low: '< 6.5 (Acidic)',
+    medium: '6.5 - 7.0 (Neutral)',
+    high: '> 7.0 (Alkaline)',
+  },
+  EC: {
+    low: '< 2.0 (Normal)',
+    medium: '2.0 - 4.0 (Moderate)',
+    high: '> 4.0 (Saline)',
+    middleLabel: 'MEDIUM',
+    highLabel: 'HIGH',
+  },
+  S: {
+    low: '< 10 (Deficient)',
+    medium: '> 10 (Sufficient)',
+    high: '',
+    middleLabel: 'SUFFICIENT',
+    highLabel: '-',
+  },
+  Zn: {
+    low: '< 0.6 (Deficient)',
+    medium: '> 0.6 (Sufficient)',
+    high: '',
+    middleLabel: 'SUFFICIENT',
+    highLabel: '-',
+  },
+  Cu: {
+    low: '< 0.2 (Deficient)',
+    medium: '> 0.2 (Sufficient)',
+    high: '',
+    middleLabel: 'SUFFICIENT',
+    highLabel: '-',
+  },
+  Fe: {
+    low: '< 4.5 (Deficient)',
+    medium: '> 4.5 (Sufficient)',
+    high: '',
+    middleLabel: 'SUFFICIENT',
+    highLabel: '-',
+  },
+  Mn: {
+    low: '< 2.0 (Deficient)',
+    medium: '> 2.0 (Sufficient)',
+    high: '',
+    middleLabel: 'SUFFICIENT',
+    highLabel: '-',
+  },
+  B: {
+    low: '< 0.5 (Deficient)',
+    medium: '> 0.5 (Sufficient)',
+    high: '',
+    middleLabel: 'SUFFICIENT',
+    highLabel: '-',
+  },
+};
+
+function getLevelFromValue(key: string, value: unknown): NutrientLevel | null {
+  if (typeof value !== 'number' || Number.isNaN(value)) return null;
+  const range = NUTRIENT_RANGES[key];
+  if (!range) return null;
+  if (value < range.lowMax) return 'Low';
+  if (value <= range.sufficientMax) return 'Sufficient';
+  return 'High';
+}
+
+const SOIL_CACHE_NAMESPACE = 'soil-page-realtime-cache:v1';
+
+function formatCacheCoordinate(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value.toFixed(6);
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed.toFixed(6) : value.trim();
+  }
+  return '';
+}
+
+function getSoilCacheStorageKey(fieldId: string, lat: unknown, lon: unknown) {
+  return `${SOIL_CACHE_NAMESPACE}:${fieldId}:${formatCacheCoordinate(lat)}:${formatCacheCoordinate(lon)}`;
+}
+
+function getCachedSoilResponse(fieldId: string) {
+  if (typeof window === 'undefined' || !fieldId) return null;
+
+  try {
+    const cachedKey = localStorage.getItem(`${SOIL_CACHE_NAMESPACE}:index:${fieldId}`);
+    if (!cachedKey) return null;
+
+    const raw = localStorage.getItem(cachedKey);
+    if (!raw) return null;
+
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error('Failed to read soil cache', error);
+    return null;
+  }
+}
+
+function setCachedSoilResponse(fieldId: string, soilJson: any) {
+  if (typeof window === 'undefined' || !fieldId) return;
+
+  try {
+    const response = soilJson?.data || soilJson;
+    const cacheKey = getSoilCacheStorageKey(fieldId, response?.lat, response?.lon);
+    localStorage.setItem(
+      cacheKey,
+      JSON.stringify({
+        fieldId,
+        lat: response?.lat ?? null,
+        lon: response?.lon ?? null,
+        soilJson,
+      }),
+    );
+    localStorage.setItem(`${SOIL_CACHE_NAMESPACE}:index:${fieldId}`, cacheKey);
+  } catch (error) {
+    console.error('Failed to save soil cache', error);
+  }
+}
+
+
+
 export default function SoilPage() {
   const router = useRouter();
   const [data, setData] = useState<any>(null);
+  const [soil, setSoil] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
   /* ---------- Fertilizer state ---------- */
@@ -275,63 +447,39 @@ export default function SoilPage() {
   const [OC, setOC] = useState('');
   const [fertilizer, setFertilizer] = useState<any>(null);
   const [loadingFert, setLoadingFert] = useState(false);
+  const [fieldData, setFieldData] = useState<any>(null);
 
   // New State for Nutrient Tabs
   const [nutrientTab, setNutrientTab] = useState<'macro' | 'micro' | 'prop'>(
     'macro',
   );
   const [loadingSoil, setLoadingSoil] = useState(true);
+  const [hasError, setHasError] = useState(false);
+  const [selectedFieldId, setSelectedFieldId] = useState<string>('');
+  const lastMapSelectionRef = useRef<string | null>(null);
+  const lastFetchedFieldIdRef = useRef<string | null>(null);
+  const lastPredictedFieldIdRef = useRef<string | null>(null);
+  const cachedFieldIdRef = useRef<string | null>(null);
 
-  // ===== DONUT HELPERS (BACKEND → UI) =====
-  const macroBars = (level?: string) => [
-    { label: 'High', val: level === 'High' ? 100 : 0, color: '#22c55e' },
-    { label: 'Medium', val: level === 'Medium' ? 100 : 0, color: '#facc15' },
-    { label: 'Low', val: level === 'Low' ? 100 : 0, color: '#ef4444' },
-  ];
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const storedFieldId = localStorage.getItem('selectedFieldId');
 
-  const microBars = (level?: string) => [
-    {
-      label: 'Sufficient',
-      val: level === 'Sufficient' ? 100 : 0,
-      color: '#22c55e',
-    },
-    {
-      label: 'Deficient',
-      val: level === 'Deficient' ? 100 : 0,
-      color: '#ef4444',
-    },
-  ];
+      if (storedFieldId) {
+        setSelectedFieldId(storedFieldId);
+        console.log('Loaded fieldId from localStorage:', storedFieldId);
 
-  const phBars = (value?: number) => {
-  if (typeof value !== "number") {
-    return [
-      { label: "Alkaline", val: 0, color: "#9333ea" },
-      { label: "Neutral", val: 0, color: "#22c55e" },
-      { label: "Acidic", val: 0, color: "#facc15" },
-    ];
-  }
-
-  let level = "";
-
-  if (value < 6.5) level = "Acidic";
-  else if (value <= 7.5) level = "Neutral";
-  else level = "Alkaline";
-
-  return [
-    { label: "Alkaline", val: level === "Alkaline" ? 100 : 0, color: "#9333ea" },
-    { label: "Neutral", val: level === "Neutral" ? 100 : 0, color: "#22c55e" },
-    { label: "Acidic", val: level === "Acidic" ? 100 : 0, color: "#facc15" },
-  ];
-};
-
-  const ecBars = (level?: string) => [
-    {
-      label: 'Non-Saline',
-      val: level === 'Non-saline' ? 100 : 0,
-      color: '#3b82f6',
-    },
-    { label: 'Saline', val: level === 'Saline' ? 100 : 0, color: '#f97316' },
-  ];
+        const cached = getCachedSoilResponse(storedFieldId);
+        if (cached?.soilJson) {
+          cachedFieldIdRef.current = storedFieldId;
+          applySoilOverviewResponse(cached.soilJson);
+          setError(null);
+          setHasError(false);
+          setLoadingSoil(false);
+        }
+      }
+    }
+  }, []);
 
   /* ---------- VALIDATION ---------- */
   const isFormValid = !!N && !!P && !!K && !!OC && !loadingFert;
@@ -345,48 +493,33 @@ export default function SoilPage() {
     }
   }, [router]);
 
-  /* ---------- Load soil + states (with robust fallback) ---------- */
+const [sampleDate, setSampleDate] = useState('');
+
   useEffect(() => {
-    async function loadInitialData() {
-      console.log('BACKEND URL =', process.env.NEXT_PUBLIC_BACKEND_URL);
-      setLoadingSoil(true);
+    const ec =
+      soil?.stats?.EC ??
+      soil?.stats?.ec ??
+      soil?.modelPredictions?.EC ??
+      soil?.properties?.ec ??
+      soil?.EC ??
+      soil?.ec ??
+      null;
+    const oc =
+      soil?.stats?.OC ??
+      soil?.stats?.oc ??
+      soil?.modelPredictions?.OC ??
+      soil?.properties?.oc ??
+      soil?.OC ??
+      soil?.oc ??
+      null;
+    console.log('FULL SOIL:', soil);
+    console.log('EC FINAL:', ec);
+    console.log('OC FINAL:', oc);
+    console.log('STATS:', soil?.stats);
+    console.log('MODEL:', soil?.modelPredictions);
+  }, [soil]);
 
-      // 1. Fetch Soil Data
-      try {
-        const soilJson = await fetchSoilData();
-        console.log('Soil API data:', soilJson);
-
-        // 🔥 BACKEND COMPATIBILITY LAYER
-        const normalizedSoilData =
-          soilJson?.data && typeof soilJson.data === 'object'
-            ? soilJson.data
-            : soilJson;
-        console.log('Normalized Soil Data:', normalizedSoilData);
-        // 🔁 ADAPTER: backend ML response → soil UI format
-        const rawStats = normalizedSoilData?.prediction?.stats ?? {};
-
-        // 🔥 STEP 2: EXTRACT & FORCE NUMERIC NUTRIENT VALUES
-const rawPredictions =
-  normalizedSoilData?.prediction?.predictions ?? {};
-
-const nutrients = {
-  N: rawPredictions.N?.value != null ? Number(rawPredictions.N.value) : null,
-  P: rawPredictions.P?.value != null ? Number(rawPredictions.P.value) : null,
-  K: rawPredictions.K?.value != null ? Number(rawPredictions.K.value) : null,
-  OC: rawPredictions.OC?.value != null ? Number(rawPredictions.OC.value) : null,
-
-  S: rawPredictions.S?.value != null ? Number(rawPredictions.S.value) : null,
-  Zn: rawPredictions.Zn?.value != null ? Number(rawPredictions.Zn.value) : null,
-  Fe: rawPredictions.Fe?.value != null ? Number(rawPredictions.Fe.value) : null,
-  Mn: rawPredictions.Mn?.value != null ? Number(rawPredictions.Mn.value) : null,
-  Cu: rawPredictions.Cu?.value != null ? Number(rawPredictions.Cu.value) : null,
-
-  pH: rawPredictions.pH?.value != null ? Number(rawPredictions.pH.value) : null,
-  EC: rawPredictions.EC?.value != null ? Number(rawPredictions.EC.value) : null,
-};
-
-        console.log('RAW STATS FROM BACKEND:', rawStats);
-        const normalizeStatus = (s?: string) => {
+  const normalizeStatus = (s?: string) => {
   if (!s) return undefined;
 
   const v = s.toLowerCase();
@@ -432,82 +565,537 @@ const normalizeMicroStatus = (s?: string) => {
   return undefined;
 };
 
+  const applySoilOverviewResponse = (soilJson: any) => {
+    const response = soilJson?.data || soilJson;
+    const baseSoil = response?.data || response;
+    setSoil(baseSoil);
+    const properties =
+      response?.properties ||
+      response?.data?.properties ||
+      response?.soilFeatures ||
+      response?.data?.soilFeatures ||
+      {};
+    let predictionBlock = response?.prediction || response?.data?.prediction || {};
 
-        const adaptedSoilData = {
-          soilScore: '--',
-          nutrients,
+    if (!predictionBlock?.predictions && response?.predictions) {
+      predictionBlock = {
+        predictions: response.predictions,
+        stats: response.stats || {}
+      };
+    }
 
-          stats: {
-            // 🔹 MACRO + OC
-            N:  { label: normalizeMacroStatus(rawStats?.N?.label) },
-            P:  { label: normalizeMacroStatus(rawStats?.P?.label) },
-            K:  { label: normalizeMacroStatus(rawStats?.K?.label) },
-            OC: { label: normalizeMacroStatus(rawStats?.OC?.label) },
+    const rawPredictions = predictionBlock?.predictions || {};
+    const rawStats = predictionBlock?.stats || {};
+    console.log("🔍 APPLY_SOIL_OVERVIEW - RESPONSE KEY", Object.keys(response || {}));
+    console.log("🔍 APPLY_SOIL_OVERVIEW - PROPERTIES FOUND:", properties);
+    console.log("FINAL BACKEND RESPONSE 👉", JSON.stringify(response, null, 2));
+    console.log("PREDICTION BLOCK 👉", predictionBlock);
+    console.log("RAW PREDICTIONS 👉", rawPredictions);
 
-            // 🔹 MICRO
-            S:  { label: normalizeMicroStatus(rawStats?.S?.label) },
-            Zn: { label: normalizeMicroStatus(rawStats?.Zn?.label) },
-            Fe: { label: normalizeMicroStatus(rawStats?.Fe?.label) },
-            Mn: { label: normalizeMicroStatus(rawStats?.Mn?.label) },
-            Cu: { label: normalizeMicroStatus(rawStats?.Cu?.label) },
-            B:  { label: normalizeMicroStatus(rawStats?.B?.label) },
+    const nutrients = {
+      N:
+        rawPredictions.nitrogen?.value != null
+          ? Number(rawPredictions.nitrogen.value)
+          : rawPredictions.N?.value != null
+            ? Number(rawPredictions.N.value)
+            : null,
+      P:
+        rawPredictions.phosphorus?.value != null
+          ? Number(rawPredictions.phosphorus.value)
+          : rawPredictions.P?.value != null
+            ? Number(rawPredictions.P.value)
+            : null,
+      K:
+        rawPredictions.potassium?.value != null
+          ? Number(rawPredictions.potassium.value)
+          : rawPredictions.K?.value != null
+            ? Number(rawPredictions.K.value)
+            : null,
+      OC:
+        properties?.oc ??
+        properties?.OC ??
+        response?.properties?.oc ??
+        response?.properties?.OC ??
+        response?.data?.properties?.oc ??
+        response?.data?.properties?.OC ??
+        response?.modelPredictions?.OC ??
+        response?.stats?.OC?.value ??
+        response?.stats?.OC ??
+        response?.OC ??
+        response?.oc ??
+        rawPredictions?.OC?.value ??
+        null,
+      S:
+        rawPredictions.SULFUR?.value != null
+          ? Number(rawPredictions.SULFUR.value)
+          : rawPredictions.sulfur?.value != null
+            ? Number(rawPredictions.sulfur.value)
+            : rawPredictions.S?.value != null
+              ? Number(rawPredictions.S.value)
+              : null,
+      Zn:
+        rawPredictions.zinc?.value != null
+          ? Number(rawPredictions.zinc.value)
+          : rawPredictions.Zn?.value != null
+            ? Number(rawPredictions.Zn.value)
+            : null,
+      B:
+        rawPredictions.BORON?.value != null
+          ? Number(rawPredictions.BORON.value)
+          : rawPredictions.boron?.value != null
+            ? Number(rawPredictions.boron.value)
+            : rawPredictions.B?.value != null
+              ? Number(rawPredictions.B.value)
+              : null,
+      Fe:
+        rawPredictions.iron?.value != null
+          ? Number(rawPredictions.iron.value)
+          : rawPredictions.Fe?.value != null
+            ? Number(rawPredictions.Fe.value)
+            : null,
+      Mn:
+        rawPredictions.manganese?.value != null
+          ? Number(rawPredictions.manganese.value)
+          : rawPredictions.Mn?.value != null
+            ? Number(rawPredictions.Mn.value)
+            : null,
+      Cu:
+        rawPredictions.copper?.value != null
+          ? Number(rawPredictions.copper.value)
+          : rawPredictions.Cu?.value != null
+            ? Number(rawPredictions.Cu.value)
+            : null,
+      pH:
+        properties?.ph != null
+          ? Number(properties.ph)
+          : rawPredictions.pH?.value != null
+            ? Number(rawPredictions.pH.value)
+            : null,
+      EC:
+        properties?.ec?.value ??
+        (typeof properties?.ec === 'number' ? properties.ec : null) ??
+        properties?.EC?.value ??
+        (typeof properties?.EC === 'number' ? properties.EC : null) ??
+        response?.properties?.ec?.value ??
+        (typeof response?.properties?.ec === 'number' ? response.properties.ec : null) ??
+        response?.properties?.EC?.value ??
+        (typeof response?.properties?.EC === 'number' ? response.properties.EC : null) ??
+        response?.data?.properties?.ec?.value ??
+        (typeof response?.data?.properties?.ec === 'number' ? response.data.properties.ec : null) ??
+        response?.data?.properties?.EC?.value ??
+        (typeof response?.data?.properties?.EC === 'number' ? response.data.properties.EC : null) ??
+        response?.modelPredictions?.EC ??
+        response?.stats?.EC?.value ??
+        response?.stats?.EC ??
+        response?.EC?.value ??
+        (typeof response?.EC === 'number' ? response.EC : null) ??
+        response?.ec?.value ??
+        (typeof response?.ec === 'number' ? response.ec : null) ??
+        rawPredictions?.EC?.value ??
+        null,
+    };
+    console.log('SOIL DATA FULL:', response);
+    console.log('EC:', response?.properties?.ec ?? response?.properties?.EC ?? response?.data?.properties?.ec ?? response?.data?.properties?.EC ?? response?.ec ?? response?.EC ?? null);
+    console.log('OC:', response?.properties?.oc ?? response?.properties?.OC ?? response?.data?.properties?.oc ?? response?.data?.properties?.OC ?? response?.oc ?? response?.OC ?? null);
+    console.log('FARMER:', response?.farmer);
+    console.log('🔍 NUTRIENTS OBJECT CREATED:', nutrients);
+    console.log('EC RAW:', properties?.ec ?? properties?.EC);
+    console.log('EC FINAL:', nutrients.EC);
+    console.log('OC RAW properties.oc:', properties?.oc ?? properties?.OC);
+    console.log('OC RAW rawPredictions.OC:', rawPredictions.OC);
+    console.log('OC FINAL:', nutrients.OC);
 
-            // 🔹 PROPERTIES (keep old normalizer)
-            pH: { label: normalizeStatus(rawStats?.pH?.label) },
-            EC: { label: normalizeStatus(rawStats?.EC?.label) },
-          },
+    const adaptedSoilData = {
+      overallSoilScore: response?.overallSoilScore ?? null,
+      lat: response?.lat,
+      lon: response?.lon,
+      properties: response?.properties ?? null,
+      farmer: response?.farmer ?? null,
+      ec: response?.ec ?? null,
+      oc: response?.oc ?? null,
+      nutrients,
+      stats: {
 
+        N: { label: normalizeMacroStatus(rawStats?.N?.label) },
+        P: { label: normalizeMacroStatus(rawStats?.P?.label) },
+        K: { label: normalizeMacroStatus(rawStats?.K?.label) },
+        OC: { label: normalizeMacroStatus(rawStats?.OC?.label) },
+        S: { label: normalizeMicroStatus(rawStats?.S?.label) },
+        Zn: { label: normalizeMicroStatus(rawStats?.Zn?.label) },
+        Fe: { label: normalizeMicroStatus(rawStats?.Fe?.label) },
+        Mn: { label: normalizeMicroStatus(rawStats?.Mn?.label) },
+        Cu: { label: normalizeMicroStatus(rawStats?.Cu?.label) },
+        B: { label: normalizeMicroStatus(rawStats?.B?.label) },
+        pH: { label: normalizeStatus(rawStats?.pH?.label) },
+        EC: { label: normalizeStatus(rawStats?.EC?.label) },
+      },
+      forecast7d: predictionBlock?.forecast7d ?? [],
+      soilLayers: predictionBlock?.soilLayers ?? [],
+      moistureLayers: predictionBlock?.moistureLayers ?? [],
+      tempInsight: predictionBlock?.tempInsight,
+      moistInsight: predictionBlock?.moistInsight,
+      tempActions: predictionBlock?.tempActions ?? [],
+      moistActions: predictionBlock?.moistActions ?? [],
+      fertilizerRecommendation: response?.fertilizerRecommendation,
+    };
+    console.log('🔍 ADAPTED SOIL DATA - nutrients:', adaptedSoilData.nutrients);
 
-          forecast7d: normalizedSoilData?.prediction?.forecast7d ?? [],
+    setData(adaptedSoilData);
+    setStateValue(response?.state || '');
+    setDistrictValue(response?.district || '');
+    setCrop(response?.crop || '');
 
-          soilLayers: normalizedSoilData?.prediction?.soilLayers ?? [],
-          moistureLayers: normalizedSoilData?.prediction?.moistureLayers ?? [],
+    if (predictionBlock?.predictions) {
+      const n = predictionBlock.predictions;
+      const safe = (v?: number, d = 2) =>
+        typeof v === 'number' && !Number.isNaN(v) ? v.toFixed(d) : '';
 
-          tempInsight: normalizedSoilData?.prediction?.tempInsight,
-          moistInsight: normalizedSoilData?.prediction?.moistInsight,
+      setN(safe(n.nitrogen?.value ?? n.N?.value, 0));
+      setP(safe(n.phosphorus?.value ?? n.P?.value, 0));
+      setK(safe(n.potassium?.value ?? n.K?.value, 0));
+      setOC(
+        safe(
+          (properties?.oc as number | undefined) ??
+            (response?.oc as number | undefined) ??
+            n.OC?.value,
+          2,
+        ),
+      );
+    }
 
-          tempActions: normalizedSoilData?.prediction?.tempActions ?? [],
-          moistActions: normalizedSoilData?.prediction?.moistActions ?? [],
-        };
+    return adaptedSoilData;
+  };
 
-        setData(adaptedSoilData);
-        setStateValue(normalizedSoilData?.state || '');
-        setDistrictValue(normalizedSoilData?.district || '');
-        setCrop(normalizedSoilData?.crop || '');
-        setLoadingSoil(false);
-        console.log('✅ ADAPTED DATA FOR UI:', adaptedSoilData);
+async function generateReportByDate() {
 
-        // Populate inputs if available
-        if (normalizedSoilData?.prediction?.predictions) {
-          const n = normalizedSoilData.prediction.predictions;
-          const safe = (v?: number, d = 2) =>
-            typeof v === 'number' && !Number.isNaN(v)
-              ? v.toFixed(d)
-              : '';
+  const fieldId = selectedFieldId;
+  if (!fieldId) {
+    console.error('No field selected');
+    return;
+  }
+  console.log('Using fieldId:', fieldId);
 
-          setN(safe(n.N?.value, 0));
-          setP(safe(n.P?.value, 0));
-          setK(safe(n.K?.value, 0));
-          setOC(safe(n.OC?.value, 2));
-        }
+  if (!sampleDate) {
+    alert("Please select sample date");
+    return;
+  }
+
+  try {
+    setLoadingSoil(true);
+
+    // get lat/lon from already loaded soil overview data
+    const lat = data?.lat;
+    const lon = data?.lon;
+
+    if (!lat || !lon) {
+      alert("Field location not available");
+      return;
+    }
+
+    let soilJson: any = null;
+
+    try {
+      // Trigger prediction first; final UI should still render from refreshed overview.
+      await predictSoil({
+        field_id: fieldId,
+        lat: lat,
+        lon: lon,
+        sample_date: sampleDate,
+      });
+      soilJson = await fetchSoilData(fieldId);
+    } catch (predictErr) {
+      console.error('predictSoil or overview refresh failed, falling back to legacy date report', predictErr);
+      soilJson = await fetchSoilByDate({
+        lat: lat,
+        lon: lon,
+        sample_date: sampleDate,
+      });
+    }
+
+    const response = soilJson?.data || soilJson;
+    const baseSoil = response?.data || response;
+    setSoil(baseSoil);
+    const properties =
+      response?.properties ||
+      response?.data?.properties ||
+      response?.soilFeatures ||
+      response?.data?.soilFeatures ||
+      {};
+    let predictionBlock = response?.prediction || response?.data?.prediction || {};
+
+    if (!predictionBlock?.predictions && response?.predictions) {
+      predictionBlock = {
+        predictions: response.predictions,
+        stats: response.stats || {}
+      };
+    }
+
+    const rawPredictions = predictionBlock?.predictions || {};
+    const rawStats = predictionBlock?.stats || {};
+    console.log("FINAL BACKEND RESPONSE 👉", JSON.stringify(response, null, 2));
+    console.log("PREDICTION BLOCK 👉", predictionBlock);
+    console.log("RAW PREDICTIONS 👉", rawPredictions);
+    console.log("PROPERTIES 👉", properties);
+
+    const nutrients = {
+  N:
+    rawPredictions.nitrogen?.value != null
+      ? Number(rawPredictions.nitrogen.value)
+      : rawPredictions.N?.value != null
+        ? Number(rawPredictions.N.value)
+        : null,
+  P:
+    rawPredictions.phosphorus?.value != null
+      ? Number(rawPredictions.phosphorus.value)
+      : rawPredictions.P?.value != null
+        ? Number(rawPredictions.P.value)
+        : null,
+  K:
+    rawPredictions.potassium?.value != null
+      ? Number(rawPredictions.potassium.value)
+      : rawPredictions.K?.value != null
+        ? Number(rawPredictions.K.value)
+        : null,
+
+  OC:
+    properties?.oc ??
+    properties?.OC ??
+    response?.properties?.oc ??
+    response?.properties?.OC ??
+    response?.data?.properties?.oc ??
+    response?.data?.properties?.OC ??
+    response?.modelPredictions?.OC ??
+    response?.stats?.OC?.value ??
+    response?.stats?.OC ??
+    response?.OC ??
+    response?.oc ??
+    rawPredictions?.OC?.value ??
+    null,
+
+  S:
+    rawPredictions.SULFUR?.value != null
+      ? Number(rawPredictions.SULFUR.value)
+      : rawPredictions.sulfur?.value != null
+        ? Number(rawPredictions.sulfur.value)
+        : rawPredictions.S?.value != null
+          ? Number(rawPredictions.S.value)
+          : null,
+  Zn:
+    rawPredictions.zinc?.value != null
+      ? Number(rawPredictions.zinc.value)
+      : rawPredictions.Zn?.value != null
+        ? Number(rawPredictions.Zn.value)
+        : null,
+  B:
+    rawPredictions.BORON?.value != null
+      ? Number(rawPredictions.BORON.value)
+      : rawPredictions.boron?.value != null
+        ? Number(rawPredictions.boron.value)
+        : rawPredictions.B?.value != null
+          ? Number(rawPredictions.B.value)
+          : null,
+  Fe:
+    rawPredictions.iron?.value != null
+      ? Number(rawPredictions.iron.value)
+      : rawPredictions.Fe?.value != null
+        ? Number(rawPredictions.Fe.value)
+        : null,
+  Mn:
+    rawPredictions.manganese?.value != null
+      ? Number(rawPredictions.manganese.value)
+      : rawPredictions.Mn?.value != null
+        ? Number(rawPredictions.Mn.value)
+        : null,
+  Cu:
+    rawPredictions.copper?.value != null
+      ? Number(rawPredictions.copper.value)
+      : rawPredictions.Cu?.value != null
+        ? Number(rawPredictions.Cu.value)
+        : null,
+
+  pH:
+    properties?.ph != null
+      ? Number(properties.ph)
+      : rawPredictions.pH?.value != null
+        ? Number(rawPredictions.pH.value)
+        : null,
+  EC:
+    properties?.ec?.value ??
+    (typeof properties?.ec === 'number' ? properties.ec : null) ??
+    properties?.EC?.value ??
+    (typeof properties?.EC === 'number' ? properties.EC : null) ??
+    response?.properties?.ec?.value ??
+    (typeof response?.properties?.ec === 'number' ? response.properties.ec : null) ??
+    response?.properties?.EC?.value ??
+    (typeof response?.properties?.EC === 'number' ? response.properties.EC : null) ??
+    response?.data?.properties?.ec?.value ??
+    (typeof response?.data?.properties?.ec === 'number' ? response.data.properties.ec : null) ??
+    response?.data?.properties?.EC?.value ??
+    (typeof response?.data?.properties?.EC === 'number' ? response.data.properties.EC : null) ??
+    response?.modelPredictions?.EC ??
+    response?.stats?.EC?.value ??
+    response?.stats?.EC ??
+    response?.EC?.value ??
+    (typeof response?.EC === 'number' ? response.EC : null) ??
+    response?.ec?.value ??
+    (typeof response?.ec === 'number' ? response.ec : null) ??
+    rawPredictions?.EC?.value ??
+    null,
+};
+  console.log('SOIL DATA FULL:', response);
+  console.log('EC:', response?.properties?.ec ?? response?.properties?.EC ?? response?.data?.properties?.ec ?? response?.data?.properties?.EC ?? response?.ec ?? response?.EC ?? null);
+  console.log('OC:', response?.properties?.oc ?? response?.properties?.OC ?? response?.data?.properties?.oc ?? response?.data?.properties?.OC ?? response?.oc ?? response?.OC ?? null);
+  console.log('FARMER:', response?.farmer);
+  console.log('EC RAW:', properties?.ec ?? properties?.EC);
+  console.log('EC FINAL:', nutrients.EC);
+
+  setData((prev: any) => ({
+      ...prev,
+
+      properties: response?.properties ?? prev?.properties ?? null,
+      farmer: response?.farmer ?? prev?.farmer ?? null,
+      ec: response?.ec ?? prev?.ec ?? null,
+      oc: response?.oc ?? prev?.oc ?? null,
+
+      nutrients,
+
+      stats: {
+        N:  { label: normalizeMacroStatus(rawStats?.N?.label) },
+        P:  { label: normalizeMacroStatus(rawStats?.P?.label) },
+        K:  { label: normalizeMacroStatus(rawStats?.K?.label) },
+        OC: { label: normalizeMacroStatus(rawStats?.OC?.label) },
+
+        S:  { label: normalizeMicroStatus(rawStats?.S?.label) },
+        Zn: { label: normalizeMicroStatus(rawStats?.Zn?.label) },
+        Fe: { label: normalizeMicroStatus(rawStats?.Fe?.label) },
+        Mn: { label: normalizeMicroStatus(rawStats?.Mn?.label) },
+        Cu: { label: normalizeMicroStatus(rawStats?.Cu?.label) },
+
+        pH: { label: normalizeStatus(rawStats?.pH?.label) },
+        EC: { label: normalizeStatus(rawStats?.EC?.label) },
+      },
+
+      // ⭐ ADD THESE
+      forecast7d: predictionBlock?.forecast7d ?? [], 
+      soilLayers: predictionBlock?.soilLayers ?? [],
+      moistureLayers: predictionBlock?.moistureLayers ?? [],
+
+      tempInsight: predictionBlock?.tempInsight,
+      moistInsight: predictionBlock?.moistInsight,
+
+      tempActions: predictionBlock?.tempActions ?? [],
+      moistActions: predictionBlock?.moistActions ?? [],
+      fertilizerRecommendation: response?.fertilizerRecommendation,
+    }));
+
+  } catch (err) {
+    console.error(err);
+  } finally {
+    setLoadingSoil(false);
+  }
+}
+
+  /* ---------- Fetch field details ---------- */
+  useEffect(() => {
+    if (!selectedFieldId) return;
+
+    if (lastFetchedFieldIdRef.current === selectedFieldId) return;
+    lastFetchedFieldIdRef.current = selectedFieldId;
+
+    let isMounted = true;
+
+    async function fetchFieldDetails() {
+      try {
+        const details = await fetchFieldById(selectedFieldId);
+        if (!isMounted) return;
+        setFieldData(details);
+        setHasError(false);
       } catch (e: any) {
-        console.error('Soil API failed FULL ERROR:', e);
+        if (!isMounted) return;
+        console.error('Field details fetch failed:', e);
+        setError('Unable to fetch field details.');
+        setHasError(true);
+      }
+    }
 
-        // If token expired or unauthorized → redirect to login
+    fetchFieldDetails();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedFieldId]);
+
+  /* ---------- Run prediction from DB field data ---------- */
+  const fieldDataId = fieldData?.field_id ?? fieldData?.id ?? null;
+
+  useEffect(() => {
+    if (!fieldDataId) return;
+
+    if (lastPredictedFieldIdRef.current === fieldDataId) return;
+    if (cachedFieldIdRef.current === fieldDataId) return;
+    lastPredictedFieldIdRef.current = fieldDataId;
+
+    let isMounted = true;
+
+    async function runPrediction() {
+      try {
+        if (!isMounted) return;
+
+        setLoadingSoil(true);
+        setError(null);
+        setHasError(false);
+
+        const predictionRes = await predictSoilByFieldId(fieldDataId);
+        console.log('🔍 PREDICTION API RESPONSE PROPERTIES:', predictionRes?.properties || 'NO PROPERTIES');
+
+        const soilJson = await fetchSoilData(fieldDataId);
+        if (!isMounted) return;
+        console.log('🔍 SOIL DATA API RESPONSE PROPERTIES:', soilJson?.data?.properties || soilJson?.properties || 'NO PROPERTIES');
+
+        // ✅ inject properties ONLY (no other change)
+        if (predictionRes?.properties) {
+          const target = soilJson?.data ?? soilJson;
+          console.log('🔍 TARGET BEFORE MERGE:', { hasTarget: !!target, targetKeys: Object.keys(target || {}) });
+
+          target.properties = {
+            ...(target.properties || {}),
+            ...predictionRes.properties,
+          };
+          console.log('🔍 TARGET AFTER MERGE - PROPERTIES:', target.properties);
+        } else {
+          console.log('🔍 NO PREDICTION PROPERTIES TO MERGE');
+        }
+
+        applySoilOverviewResponse(soilJson);
+        setCachedSoilResponse(fieldDataId, soilJson);
+      } catch (e: any) {
+        if (!isMounted) return;
+        console.error('Prediction failed:', e);
+        const status = e?.response?.status ?? e?.status;
+
         if (
-          e?.response?.status === 401 ||
+          status === 401 ||
           e?.message?.toLowerCase().includes('token')
         ) {
           router.push('/login');
           return;
         }
 
-        setError('Unable to fetch soil data from backend');
+        setError('Unable to fetch soil data from backend. Backend is unavailable, please try again later.');
+        setHasError(true);
+      } finally {
+        if (isMounted) {
+          setLoadingSoil(false);
+        }
       }
     }
 
-    loadInitialData();
-  }, []);
+    runPrediction();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [fieldDataId]);
 
   /* ---------- Fertilizer API (FULLY BACKEND DRIVEN) ---------- */
   async function getRecommendation() {
@@ -516,6 +1104,25 @@ const normalizeMicroStatus = (s?: string) => {
     setError(null);
 
     try {
+      const overviewFertilizer = data?.fertilizerRecommendation;
+
+      if (overviewFertilizer) {
+        const adaptedFromOverview = {
+          crop: crop || overviewFertilizer?.crop || '',
+          soilConditioner: overviewFertilizer?.fym || '—',
+          combo1: Array.isArray(overviewFertilizer?.combination_1)
+            ? overviewFertilizer.combination_1
+            : [],
+          combo2: Array.isArray(overviewFertilizer?.combination_2)
+            ? overviewFertilizer.combination_2
+            : [],
+        };
+
+        setFertilizer(adaptedFromOverview);
+        setLoadingFert(false);
+        return;
+      }
+
       const payload = {
         N: Number(N),
         P: Number(P),
@@ -554,6 +1161,30 @@ const normalizeMicroStatus = (s?: string) => {
     }
   }
 
+  const getDisplayCombinations = (fert: any) => {
+    const combo1 = Array.isArray(fert?.combo1) ? fert.combo1 : [];
+    const combo2 = Array.isArray(fert?.combo2) ? fert.combo2 : [];
+
+    const combosAreSame =
+      combo1.length > 0 &&
+      combo2.length > 0 &&
+      JSON.stringify(combo1) === JSON.stringify(combo2);
+
+    if (!combosAreSame) {
+      return { combo1Display: combo1, combo2Display: combo2 };
+    }
+
+    if (combo1.length <= 1) {
+      return { combo1Display: combo1, combo2Display: [] };
+    }
+
+    const splitAt = Math.ceil(combo1.length / 2);
+    return {
+      combo1Display: combo1.slice(0, splitAt),
+      combo2Display: combo1.slice(splitAt),
+    };
+  };
+
   // --- SINGLE SOURCE OF TRUTH FOR RENDER ---
   // If data is null (initial load) or API failed (caught in useEffect), we rely on fallback
   const activeData = data;
@@ -572,7 +1203,49 @@ const normalizeMicroStatus = (s?: string) => {
       </div>
     );
   }
+
+  if (hasError) {
+    return (
+      <div className="h-screen flex items-center justify-center text-red-600">
+        Unable to load soil data. Please try again later.
+      </div>
+    );
+  }
+  if (!soil) return null;
   // API data processing
+
+  const ec =
+    soil?.stats?.EC ??
+    soil?.stats?.ec ??
+    soil?.modelPredictions?.EC ??
+    soil?.properties?.ec ??
+    soil?.properties?.EC ??
+    soil?.data?.properties?.ec ??
+    soil?.data?.properties?.EC ??
+    soil?.EC ??
+    soil?.ec ??
+    null;
+  const oc =
+    soil?.stats?.OC ??
+    soil?.stats?.oc ??
+    soil?.modelPredictions?.OC ??
+    soil?.properties?.oc ??
+    soil?.properties?.OC ??
+    soil?.data?.properties?.oc ??
+    soil?.data?.properties?.OC ??
+    soil?.OC ??
+    soil?.oc ??
+    null;
+  const ecValue = ec !== null && ec !== undefined
+    ? ec && typeof ec === 'object'
+      ? ec.value
+      : ec
+    : 'N/A';
+  const ocValue = oc !== null && oc !== undefined
+    ? oc && typeof oc === 'object'
+      ? oc.value
+      : oc
+    : 'N/A';
 
   // ✅ SHARED soil gradient palette (USED IN MULTIPLE PLACES)
   const soilGradients = [
@@ -650,170 +1323,432 @@ const normalizeMicroStatus = (s?: string) => {
 
   // 2. UPDATED ROW COMPONENT (Handles both List and Grid layouts with Donut)
   const NutrientGroupRow = ({
+    nutrientKey,
     label,
     myValue,
     unit,
-    bars,
-    isGrid = false,
   }: {
+    nutrientKey: string;
     label: string;
     myValue: any;
     unit: string;
-    bars: { label: string; val: number; color: string }[];
-    isGrid?: boolean;
   }) => {
-    const hasValue = typeof myValue === 'number';
+    const resolvedValue =
+      myValue && typeof myValue === 'object' ? myValue.value : myValue;
+    const hasValue = resolvedValue !== null && resolvedValue !== undefined;
+    const parsedValue = Number(resolvedValue);
+    const isNumericValue = Number.isFinite(parsedValue);
+    const level = getLevelFromValue(
+      nutrientKey,
+      isNumericValue ? parsedValue : null,
+    );
+    const style = level ? LEVEL_STYLE[level] : null;
+    const rangeInfo = NUTRIENT_RANGE_TEXT[nutrientKey];
+    const middleLabel = rangeInfo?.middleLabel ?? 'SUFFICIENT';
+    const highLabel = rangeInfo?.highLabel ?? 'HIGH';
+    const isMicroTwoColumn = ['S', 'Zn', 'B', 'Fe', 'Mn', 'Cu'].includes(nutrientKey);
+    const showThirdRangeColumn =
+      !!rangeInfo && !isMicroTwoColumn && highLabel !== '-' && !!rangeInfo.high?.trim();
+    const displayValue = hasValue ? resolvedValue : 'N/A';
+    const badgeText =
+      nutrientKey === 'EC' && level === 'Sufficient'
+        ? 'MEDIUM'
+        : level
+          ? level.toUpperCase()
+          : 'N/A';
+    const sliderGradient =
+      nutrientKey === 'EC'
+        ? 'from-green-200 via-yellow-200 to-red-200'
+        : 'from-rose-200 via-amber-200 to-emerald-200';
 
-    // --- GRID LAYOUT (Used for Micronutrients) ---
-    if (isGrid) {
-      return (
-        <div className="bg-white border border-slate-100 rounded-xl p-2 flex flex-col items-center justify-between shadow-sm hover:shadow-md transition-shadow h-full">
-          {/* Compact Header */}
-          <div className="w-full flex justify-between items-center mb-1">
-            <div className="font-bold text-slate-700 text-xs flex items-center gap-1">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  hasValue ? 'bg-green-500' : 'bg-slate-300'
-                }`}
-              ></span>
-              {label}
-            </div>
-          </div>
-
-          {/* Compact Middle Section: Donut + Value */}
-          <div className="flex flex-col items-center justify-center flex-1 -mt-1">
-            {/* Reduced Donut Size: 90 -> 55 */}
-            <DonutChart
-              bars={bars}
-              size={90}
-              strokeWidth={9}
-              centerLabel={label}
-            />
-
-            <div className="text-center mt-1">
-              <div className="text-sm font-normal text-slate-800 leading-tight">
-                {hasValue ? myValue : '--'}
-                <span className="text-[10px] text-slate-400 font-normal ml-0.5">
-                  {unit}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Compact Legend (Flex Row instead of Grid) */}
-          <div className="w-full flex justify-center gap-3 mt-1 pt-1.5 border-t border-slate-50">
-            {bars.map((bar, idx) => (
-              <div key={idx} className="flex items-center gap-1">
-                <span
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: bar.color }}
-                ></span>
-                <div className="flex items-center gap-3">
-                  <span className="text-[9px] text-slate-400 font-medium uppercase">
-                    {bar.label}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    // --- ROW LAYOUT (Used for Macro / Properties) ---
     return (
-      <div className="flex items-center justify-between p-4 bg-slate-50/50 border border-slate-100 rounded-xl mb-3 last:mb-0">
-        {/* Left: Info */}
-        <div className="flex flex-col min-w-[120px]">
-          <div className="flex items-center gap-2 mb-1">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                hasValue ? 'bg-green-500' : 'bg-slate-300'
-              }`}
-            ></span>
-            <span className="font-bold text-slate-700">{label}</span>
+      <div className="bg-gradient-to-br from-white via-emerald-50/30 to-lime-50/40 border border-emerald-100 rounded-2xl p-4 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all">
+        <div className="flex justify-between items-center mb-2">
+          <div className="text-xs font-bold text-slate-500 uppercase tracking-wide">
+            {label}
           </div>
-          <div className="text-sm font-normal text-slate-800">
-            {hasValue ? myValue : '--'}
-            <span className="text-sm text-black font-normal ml-1">{unit}</span>
-          </div>
+
+          <span
+            className={`px-2 py-1 rounded-full text-[10px] font-semibold ${
+              style?.badge ?? 'bg-slate-100 text-slate-600'
+            }`}
+          >
+            {badgeText}
+          </span>
         </div>
 
-        {/* Middle: Legend */}
-        <div className="flex-1 px-4 flex flex-col justify-center gap-1">
-          {bars.map((bar, idx) => (
-            <div
-              key={idx}
-              className="flex items-center justify-between text-xs"
-            >
-              <div className="flex items-center gap-2">
-                <div
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: bar.color }}
-                ></div>
-                <span className="text-slate-500 font-medium">{bar.label}</span>
-              </div>              
-            </div>
-          ))}
+        <div className="text-xl font-bold text-slate-900 mb-3">
+          {displayValue}
+          {isNumericValue && (
+            <span className="text-xs text-slate-400 ml-1">{unit}</span>
+          )}
         </div>
 
-        {/* Right: Donut */}
-        <div className="pl-2 border-l border-slate-200">
-          <DonutChart
-            bars={bars}
-            size={100}
-            strokeWidth={9}
-            centerLabel={label}
-          />
+        <div className={`w-full h-2 rounded-full bg-gradient-to-r ${sliderGradient} relative`}>
+          <div
+            className="absolute top-[-4px] w-3 h-3 bg-orange-500 rounded-full shadow"
+            style={{ left: style?.pointer ?? '50%' }}
+          ></div>
         </div>
+
+        {isMicroTwoColumn ? (
+          <div className="grid grid-cols-2 text-[10px] text-slate-400 mt-1 font-medium">
+            <span className="text-left">LOW</span>
+            <span className="text-center">{middleLabel}</span>
+          </div>
+        ) : (
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-medium">
+            <span>LOW</span>
+            <span>{middleLabel}</span>
+            <span>{highLabel}</span>
+          </div>
+        )}
+
+        {rangeInfo && (
+          <div className="mt-3 border border-slate-200 rounded-lg overflow-hidden">
+            {showThirdRangeColumn ? (
+              <>
+                <div className="grid grid-cols-3 bg-slate-50 text-[9px] font-semibold text-slate-600">
+                  <div className="px-2 py-1 border-r border-slate-200">LOW</div>
+                  <div className="px-2 py-1 border-r border-slate-200">{middleLabel}</div>
+                  <div className="px-2 py-1">{highLabel}</div>
+                </div>
+                <div className="grid grid-cols-3 text-[9px] text-slate-500">
+                  <div className="px-2 py-1 border-r border-slate-200">{rangeInfo.low}</div>
+                  <div className="px-2 py-1 border-r border-slate-200">{rangeInfo.medium}</div>
+                  <div className="px-2 py-1">{rangeInfo.high}</div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 bg-slate-50 text-[9px] font-semibold text-slate-600">
+                  <div className="px-2 py-1 border-r border-slate-200">LOW</div>
+                  <div className="px-2 py-1">{middleLabel}</div>
+                </div>
+                <div className="grid grid-cols-2 text-[9px] text-slate-500">
+                  <div className="px-2 py-1 border-r border-slate-200">{rangeInfo.low}</div>
+                  <div className="px-2 py-1">{rangeInfo.medium}</div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   };
+
+  const getNumericMoistureValue = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value.replace('%', '').trim());
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  };
+
+  const fallbackMoistureActions = (() => {
+    if (Array.isArray(activeData?.moistActions) && activeData.moistActions.length > 0) {
+      return activeData.moistActions;
+    }
+
+    const forecastMoisture = getNumericMoistureValue(activeData?.forecast7d?.[0]?.moisture);
+    const layerMoistureValues = Array.isArray(activeData?.moistureLayers)
+      ? activeData.moistureLayers
+          .map((l: any) => getNumericMoistureValue(l?.value))
+          .filter((v: number | null): v is number => v !== null)
+      : [];
+
+    const avgLayerMoisture =
+      layerMoistureValues.length > 0
+        ? layerMoistureValues.reduce((sum: number, v: number) => sum + v, 0) /
+          layerMoistureValues.length
+        : null;
+
+    const moistureNow = forecastMoisture ?? avgLayerMoisture;
+
+    if (moistureNow === null) {
+      return [
+        {
+          step: '1',
+          color: 'blue',
+          title: 'Run Moisture Check',
+          description: 'Refresh soil moisture readings to generate irrigation actions.',
+          cta: 'Refresh Data',
+        },
+        {
+          step: '2',
+          color: 'yellow',
+          title: 'Inspect Field Zones',
+          description: 'Check uneven wetness across depth layers before irrigation.',
+          cta: 'View Field Notes',
+        },
+      ];
+    }
+
+    if (moistureNow < 25) {
+      return [
+        {
+          step: '1',
+          color: 'red',
+          title: 'Start Irrigation Cycle',
+          description: 'Soil moisture is critically low. Apply water immediately in short cycles.',
+          cta: 'Start Irrigation',
+        },
+        {
+          step: '2',
+          color: 'yellow',
+          title: 'Apply Surface Mulch',
+          description: 'Use mulch to reduce evaporation and retain root-zone moisture.',
+          cta: 'View Mulching Guide',
+        },
+      ];
+    }
+
+    if (moistureNow < 40) {
+      return [
+        {
+          step: '1',
+          color: 'yellow',
+          title: 'Increase Irrigation Window',
+          description: 'Moisture is below target. Increase duration slightly in morning hours.',
+          cta: 'Update Schedule',
+        },
+        {
+          step: '2',
+          color: 'blue',
+          title: 'Recheck After 24 Hours',
+          description: 'Validate improvement in all depth layers after the next cycle.',
+          cta: 'Set Reminder',
+        },
+      ];
+    }
+
+    if (moistureNow <= 70) {
+      return [
+        {
+          step: '1',
+          color: 'green',
+          title: 'Maintain Current Plan',
+          description: 'Moisture is in the optimal band. Continue the existing irrigation routine.',
+          cta: 'Keep Current Plan',
+        },
+        {
+          step: '2',
+          color: 'blue',
+          title: 'Monitor Daily Trend',
+          description: 'Track depth-wise changes daily to prevent sudden moisture drops.',
+          cta: 'Track Trend',
+        },
+      ];
+    }
+
+    return [
+      {
+        step: '1',
+        color: 'blue',
+        title: 'Reduce Irrigation Volume',
+        description: 'Moisture is high. Reduce water input to avoid root stress.',
+        cta: 'Lower Irrigation',
+      },
+      {
+        step: '2',
+        color: 'yellow',
+        title: 'Improve Field Drainage',
+        description: 'Inspect outlets and channels to prevent standing water buildup.',
+        cta: 'Check Drainage',
+      },
+    ];
+  })();
 
   return (
     // ADDED: h-screen and overflow-y-auto to enable scrolling
     <div className="p-4 sm:p-5 h-full bg-[#f3f7f6] min-w-0">
       {/* ================= MITHU TOP STRIP ================= */}
-      <div className="bg-white px-4 sm:px-6 py-3 flex flex-col sm:flex-row items-center justify-between border-b gap-3 sm:gap-0">
-        <div className="flex items-center gap-3">
-          <div className="h-14 w-14 flex items-center justify-center">
-                    <Image
-                      src="/images/soil-mithu.png"
-                      alt="MarketSaathi"
-                      width={64}
-                      height={64}
-                      className="object-contain"
-                      priority
-                    />
-                  </div>
-          <div>
-            <div className="font-extrabold text-green-800 text-lg sm:text-xl">Soil Saathi</div>
-            <div className="text-xs text-gray-500">
-              Mithu — your soil co-pilot
-            </div>
-          </div>
-        </div>
+      <div className="bg-white rounded-xl shadow-sm px-6 py-4 flex items-center justify-between border border-slate-200 mb-6">
+
+  <div className="flex items-center gap-4">
+    <div className="h-14 w-14 rounded-xl bg-green-50 flex items-center justify-center">
+      <Image
+        src="/images/soil-mithu.png"
+        alt="Soil Saathi"
+        width={50}
+        height={50}
+        className="object-contain"
+      />
+    </div>
+
+    <div>
+      <div className="text-xl font-extrabold text-green-800">
+        Soil Saathi
       </div>
+      <div className="text-xs text-gray-500 tracking-wide">
+        Precision Diagnostics Enabled
+      </div>
+    </div>
+  </div>
+
+  {/*
+  <div className="flex items-center gap-3">
+    <input
+      type="date"
+      value={sampleDate}
+      onChange={(e) => setSampleDate(e.target.value)}
+      className="border border-slate-200 rounded-lg px-4 py-2 text-sm"
+    />
+
+    <button
+      onClick={generateReportByDate}
+      className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-2 rounded-lg text-sm font-semibold shadow"
+    >
+      Scan Field
+    </button>
+  </div>
+  */}
+
+</div>
+
+
 
       {/* ================= FIELD MAP (Full Width) ================= */}
       <div className="w-full my-4 h-100 rounded-lg overflow-hidden shadow-lg border border-slate-200">
-        <FarmMap title="Soil Map" initialLayer="savi" />
+        <FarmMap
+          title="Soil Map"
+          initialLayer="savi"
+          onFieldSelect={(field) => {
+            const newId = field?.id || '';
+
+            // Prevent repeated triggers from map rerenders.
+            if (lastMapSelectionRef.current === newId) {
+              return;
+            }
+
+            lastMapSelectionRef.current = newId;
+
+            setSelectedFieldId(newId);
+          }}
+        />
       </div>
 
+      
+ 
       {/* ================= MAIN CONTENT GRID ================= */}
       <div className="grid grid-cols-1 lg:grid-cols-[500px_1fr] gap-4 items-stretch">
         {/* LEFT COLUMN: Score Card & Nutrients */}
         <div className="flex flex-col gap-4 h-full">
           {/* 1. SOIL SCORE CARD (Top) */}
-          <div className="bg-white rounded-lg p-4 shadow">
+          <div className="bg-white rounded-lg p-3 shadow border border-slate-100 flex flex-col">
             <div className="text-sm font-semibold mb-2">Soil Score Card</div>
-            <div className="bg-green-50 rounded p-3 text-center">
+
+            <div className="bg-green-50 rounded-lg p-3 text-center border border-green-100">
               <div className="text-xs text-gray-500">Overall Soil Score</div>
-              <div className="text-3xl font-bold text-green-700">
-                {activeData?.soilScore ?? '--'}
+              <div
+                className={`text-3xl font-bold leading-tight ${
+                  activeData?.overallSoilScore != null
+                    ? Number(activeData.overallSoilScore) > 0.6
+                      ? 'text-green-700'
+                      : Number(activeData.overallSoilScore) >= 0.3
+                        ? 'text-yellow-700'
+                        : 'text-red-700'
+                    : 'text-green-700'
+                }`}
+              >
+                {activeData?.overallSoilScore != null
+                  ? Number(activeData.overallSoilScore).toFixed(2)
+                  : '--'}
               </div>
+            </div>
+
+            {(() => {
+              const score =
+                activeData?.overallSoilScore != null
+                  ? Number(activeData.overallSoilScore)
+                  : null;
+
+              const interpretation =
+                score == null
+                  ? 'Soil score not available yet. Run analysis to view interpretation.'
+                  : score > 0.6
+                    ? 'Healthy vegetation detected. Soil condition is good and supports crop growth.'
+                    : score >= 0.3
+                      ? 'Moderate vegetation health. Soil condition is average and may require attention.'
+                      : 'Low vegetation health detected. Soil may be dry, low in nutrients, or under stress. Field may also be recently harvested or not cultivated.';
+
+              const interpretationTone =
+                score == null
+                  ? 'bg-slate-50 text-slate-700 border-slate-200'
+                  : score > 0.6
+                    ? 'bg-green-50 text-green-800 border-green-200'
+                    : score >= 0.3
+                      ? 'bg-yellow-50 text-yellow-800 border-yellow-200'
+                      : 'bg-red-50 text-red-800 border-red-200';
+
+              return (
+                <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className={`rounded-lg border px-3 py-2 text-left ${interpretationTone}`}>
+                    <div className="text-[10px] font-bold uppercase tracking-wide mb-1">
+                      Score Interpretation
+                    </div>
+                    <p className="text-[11px] leading-snug">{interpretation}</p>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-white overflow-hidden text-left">
+                    <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                      Soil Score Reference
+                    </div>
+                    <div className="px-3 py-2 space-y-1 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="h-2.5 w-2.5 rounded-full bg-green-500 shrink-0" />
+                          <span className="font-semibold text-slate-700 truncate">Healthy</span>
+                        </div>
+                        <span className="text-slate-500 shrink-0">0.6 - 1.0</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="h-2.5 w-2.5 rounded-full bg-yellow-500 shrink-0" />
+                          <span className="font-semibold text-slate-700 truncate">Moderate</span>
+                        </div>
+                        <span className="text-slate-500 shrink-0">0.3 - 0.6</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="h-2.5 w-2.5 rounded-full bg-red-500 shrink-0" />
+                          <span className="font-semibold text-slate-700 truncate">Low</span>
+                        </div>
+                        <span className="text-slate-500 shrink-0">0.0 - 0.3</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="h-2.5 w-2.5 rounded-full bg-slate-400 shrink-0" />
+                          <span className="font-semibold text-slate-700 truncate">Degraded</span>
+                        </div>
+                        <span className="text-slate-500 shrink-0">&lt; 0</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="mt-3">
               <button
-                onClick={() => router.push('/soil/health-card')}
+                onClick={() => {
+                  try {
+                    localStorage.setItem(
+                      'soilHealthCardSnapshot',
+                      JSON.stringify({
+                        sampleDate,
+                        selectedFieldId: selectedFieldId || fieldDataId || '',
+                        soilData: data,
+                        fieldData,
+                      }),
+                    );
+                  } catch (snapshotErr) {
+                    console.error('Failed to store soil health card snapshot', snapshotErr);
+                  }
+
+                  router.push(`/soil/health-card?sampleDate=${sampleDate}`);
+                }}
                 className="flex items-center justify-center gap-2 w-full bg-green-700 hover:bg-green-800 text-white text-xs font-bold py-2.5 rounded-lg transition-all shadow-sm"
               >
                 <FileText className="w-3 h-3" /> Get Soil Health Card
@@ -822,29 +1757,35 @@ const normalizeMicroStatus = (s?: string) => {
           </div>
 
           {/* 2. KEY SOIL NUTRIENTS (Fills Remaining Height using flex-1) */}
-          <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex flex-col relative overflow-hidden flex-1">
+          <div className="bg-gradient-to-b from-emerald-50/60 via-white to-lime-50/40 rounded-2xl p-4 shadow-sm border border-emerald-100 flex flex-col relative overflow-hidden flex-1">
             {/* Background Decoration */}
-            <div className="absolute top-0 right-0 w-32 h-32 bg-green-50 rounded-full blur-3xl opacity-50 -mr-16 -mt-16 pointer-events-none"></div>
+            <div className="absolute top-0 right-0 w-36 h-36 bg-emerald-200/40 rounded-full blur-3xl opacity-60 -mr-16 -mt-16 pointer-events-none"></div>
 
             {/* TITLE & TABS */}
             <div className="mb-5 relative z-10">
-              <div className="text-base font-bold text-center text-slate-800 mb-4">
-                Key Soil Nutrients{' '}
-                <span className="text-slate-400 font-normal text-sm">
-                  (Overview)
-                </span>
+              <div className="flex items-center justify-between mb-6">
+
+              <div>
+                <div className="text-lg font-bold text-slate-900">
+                  Nutrient Intelligence
+                </div>
+                <div className="text-xs text-slate-400">
+                  Real-time soil nutrient diagnostics
+                </div>
               </div>
 
+            </div>
+
               <div className="flex justify-center">
-                <div className="bg-slate-50 p-1.5 rounded-xl border border-slate-100 inline-flex gap-1 shadow-sm">
+                <div className="bg-white/80 backdrop-blur-sm p-1.5 rounded-xl border border-emerald-100 inline-flex gap-1 shadow-sm">
                   {['macro', 'micro', 'prop'].map((t) => (
                     <button
                       key={t}
                       onClick={() => setNutrientTab(t as any)}
                       className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all duration-300 ${
                         nutrientTab === t
-                          ? 'bg-green-600 text-white shadow-md'
-                          : 'text-slate-500 hover:text-slate-700 hover:bg-white'
+                          ? 'bg-gradient-to-r from-emerald-600 to-green-600 text-white shadow-md'
+                          : 'text-slate-500 hover:text-slate-700 hover:bg-emerald-50'
                       }`}
                     >
                       {t === 'macro'
@@ -859,14 +1800,12 @@ const normalizeMicroStatus = (s?: string) => {
             </div>
 
             {/* MAIN CONTENT AREA */}
-            <div className="flex-1 relative z-10 pb-2">
+            <div className="flex-1 relative z-10 pb-2 min-h-0">
               {/* CONTAINER: SWITCHES BETWEEN LIST AND GRID */}
               <div
-                className={
-                  nutrientTab === 'micro'
-                    ? 'grid grid-cols-2 gap-3'
-                    : 'flex flex-col gap-3'
-                }
+                className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${
+                  nutrientTab === 'micro' ? 'max-h-[520px] overflow-y-auto pr-1' : ''
+                }`}
               >
                 {(() => {
                   const vals = activeData?.nutrients ?? {};
@@ -884,24 +1823,24 @@ const normalizeMicroStatus = (s?: string) => {
                     return (
                       <>
                         <NutrientGroupRow
+                          nutrientKey="N"
                           label="Nitrogen (N)"
                           myValue={vals.N}
                           unit="kg/ha"
-                          bars={macroBars(stats?.N?.label)}
                         />
 
                         <NutrientGroupRow
+                          nutrientKey="P"
                           label="Phosphorus (P)"
                           myValue={vals.P}
                           unit="kg/ha"
-                          bars={macroBars(stats?.P?.label)}
                         />
 
                         <NutrientGroupRow
+                          nutrientKey="K"
                           label="Potassium (K)"
                           myValue={vals.K}
                           unit="kg/ha"
-                          bars={macroBars(stats?.K?.label)}
                         />
                       </>
                     );
@@ -918,11 +1857,10 @@ const normalizeMicroStatus = (s?: string) => {
                     ].map((item) => (
                       <NutrientGroupRow
                         key={item.k}
+                        nutrientKey={item.k}
                         label={item.l}
                         myValue={vals[item.k]}
                         unit="mg/kg"
-                        isGrid
-                        bars={microBars(stats?.[item.k]?.label)}
                       />
                     ));
                   }
@@ -931,24 +1869,24 @@ const normalizeMicroStatus = (s?: string) => {
                     return (
                       <>
                         <NutrientGroupRow
+                          nutrientKey="OC"
                           label="Organic Carbon (OC)"
-                          myValue={vals.OC}
+                          myValue={vals.OC ?? ocValue}
                           unit="%"
-                          bars={macroBars(stats?.OC?.label)}
                         />
 
                         <NutrientGroupRow
+                          nutrientKey="pH"
                           label="pH Level"
                           myValue={vals.pH}
                           unit=""
-                          bars={phBars(Number(vals.pH))}
                         />
                          
                         <NutrientGroupRow
+                          nutrientKey="EC"
                           label="Elec. Conductivity"
-                          myValue={vals.EC}
+                          myValue={vals.EC ?? ecValue}
                           unit="dS/m"
-                          bars={ecBars(stats?.EC?.label)}
                         />
                       </>
                     );
@@ -957,8 +1895,15 @@ const normalizeMicroStatus = (s?: string) => {
               </div>
             </div>
 
-            <div className="mt-3 pt-3 border-t border-slate-100 text-[10px] text-slate-400 text-center font-medium">
-              * Distribution data based on regional sampling
+            <div className="mt-3 pt-3 border-t border-slate-100 text-[10px] text-slate-500 text-center font-medium">
+              <a
+                href={RANGE_SOURCE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-700 underline underline-offset-2"
+              >
+                ICAR-Indian Institute of Soil Science reference
+              </a>
             </div>
           </div>
         </div>
@@ -982,7 +1927,7 @@ const normalizeMicroStatus = (s?: string) => {
                         bg-gradient-to-b ${weather.bg}
                         border border-white/60
                         shadow-sm
-                        min-h-[120px]
+                        min-h-[140px] shadow-md hover:shadow-lg transition-all
                         text-center
                       `}
                     >
@@ -1019,7 +1964,7 @@ const normalizeMicroStatus = (s?: string) => {
           {/* ================= SECTION B : SOIL INSIGHTS (CORRECTED) ================= */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1">
             {/* TEMPERATURE PANEL */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 pt-4 px-3 pb-3 flex flex-col h-full">
+            <div className="bg-gradient-to-b from-emerald-50/60 to-white rounded-2xl shadow-lg border border-emerald-200 p-5 flex flex-col h-full">
               <div className="flex items-center gap-2 mb-3 mt-1">
                 <div className="p-1.5 bg-green-100 rounded-lg">
                   <ThermometerSun className="w-4 h-4 text-green-700" />
@@ -1029,7 +1974,7 @@ const normalizeMicroStatus = (s?: string) => {
                 </h3>
               </div>
 
-              <div className="bg-green-50 border border-green-100 rounded-lg px-3 py-2 text-xs text-green-800 mb-4 flex items-start gap-2">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800 mb-4 flex items-start gap-2">
                 <Sprout className="w-4 h-6 flex-shrink-0 mt-0.5" />
                 <span>
                   <span className="font-bold">Advisory:</span>{' '}
@@ -1108,17 +2053,17 @@ const normalizeMicroStatus = (s?: string) => {
             </div>
 
             {/* MOISTURE PANEL */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 pt-4 px-3 pb-3 flex flex-col h-full">
+            <div className="bg-gradient-to-b from-emerald-50/60 to-white rounded-2xl shadow-lg border border-emerald-200 p-5 flex flex-col h-full">
               <div className="flex items-center gap-2 mb-3 mt-1">
-                <div className="p-1.5 bg-blue-100 rounded-lg">
-                  <Droplets className="w-4 h-4 text-blue-700" />
+                <div className="p-1.5 bg-green-100 rounded-lg">
+                  <Droplets className="w-4 h-4 text-green-700" />
                 </div>
-                <h3 className="font-bold text-blue-900 text-sm">
+                <h3 className="font-bold text-green-900 text-sm">
                   Real-Time Soil Moisture
                 </h3>
               </div>
 
-              <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 text-xs text-blue-800 mb-4 flex items-start gap-2">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800 mb-4 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-6 flex-shrink-0 mt-0.5" />
                 <span>
                   <span className="font-bold">Advisory:</span>{' '}
@@ -1128,22 +2073,22 @@ const normalizeMicroStatus = (s?: string) => {
               </div>
 
               <div className="flex-1 flex flex-col">
-                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
                   DIAGNOSTIC VIEW
                 </div>
                 {/* Responsive container, h-80 for matching height */}
                 {/* LEFT: Depth Labels - 4 items, centered with equal spacing */}
                 <div
                   className="grid grid-cols-[80px_1fr_80px]"
-                  style={{ height: `${SOIL_TOP_OFFSET + DEPTH_ROW_HEIGHT * 4 + SOIL_BOTTOM_OFFSET}px` }}
+                  style={{ minHeight: `${DEPTH_ROW_HEIGHT * 4}px` }}
                 >
                   {/* LEFT: DEPTH LABELS */}
                   <div className="grid grid-rows-4 text-right pr-2" style={{ marginTop: `${SOIL_TOP_OFFSET}px` }}>
                     {activeData?.moistureLayers?.map((l: any, i: number) => (
                       <div
                         key={i}
-                        style={{ height: DEPTH_ROW_HEIGHT }}
-                        className="flex items-center justify-end text-sm text-gray-500 font-medium"
+                        style={{ height: `${DEPTH_ROW_HEIGHT}px` }}
+                        className="flex items-center justify-end text-sm text-gray-800 font-medium"
                       >
                         {l.depth}
                       </div>
@@ -1164,14 +2109,10 @@ const normalizeMicroStatus = (s?: string) => {
                     {activeData?.moistureLayers?.map((l: any, i: number) => (
                       <div
                         key={i}
-                        style={{ height: DEPTH_ROW_HEIGHT }}
-                        className="flex items-center justify-end text-sm text-gray-500 font-medium"
+                        style={{ height: `${DEPTH_ROW_HEIGHT}px` }}
+                        className="flex items-center font-bold text-gray-800"
                       >
-                        <DepthRowAligned
-                          value={<span className="font-bold">{l.value}%</span>}
-                          status={l.status}
-                          color={l.color}
-                        />
+                        {l.value}%
                       </div>
                     ))}
                   </div>
@@ -1185,8 +2126,8 @@ const normalizeMicroStatus = (s?: string) => {
                   Actions
                 </div>
                 <div className="grid grid-cols-2 gap-3 items-stretch">
-                  {Array.isArray(activeData?.moistActions) &&
-                    activeData.moistActions.map((action: any, i: number) => (
+                  {Array.isArray(fallbackMoistureActions) &&
+                    fallbackMoistureActions.map((action: any, i: number) => (
                       <ActionCard
                         key={i}
                         step={action.step}
@@ -1228,8 +2169,8 @@ const normalizeMicroStatus = (s?: string) => {
           </div>
         </div>
 
-        <div className="bg-green-700 text-white px-6 py-3 font-semibold text-lg">
-          Fertilizer Recommendation
+        <div className="bg-gradient-to-r from-green-700 to-green-800 text-white px-6 py-4 font-bold text-lg rounded-t-xl">
+        🌱 Fertilizer Recommendation Engine
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
           {/* ✅ FIX #2: RESTORED INPUT WRAPPER */}
@@ -1330,34 +2271,45 @@ const normalizeMicroStatus = (s?: string) => {
               </thead>
               <tbody>
                 {fertilizer ? (
-                  <tr>
-                    <td className="p-2 border">{crop || fertilizer.crop}</td>
-                    <td className="p-2 border">{fertilizer.soilConditioner}</td>
-                    <td className="p-2 border">
-                      {fertilizer.combo1?.map(
-                        (
-                          c: { fertilizer: string; doseKgHa: number },
-                          i: number,
-                        ) => (
-                          <div key={i}>
-                            {c.fertilizer} ({c.doseKgHa} kg/ha)
-                          </div>
-                        ),
-                      )}
-                    </td>
-                    <td className="p-2 border">
-                      {fertilizer.combo2?.map(
-                        (
-                          c: { fertilizer: string; doseKgHa: number },
-                          i: number,
-                        ) => (
-                          <div key={i}>
-                            {c.fertilizer} ({c.doseKgHa} kg/ha)
-                          </div>
-                        ),
-                      )}
-                    </td>
-                  </tr>
+                  (() => {
+                    const { combo1Display, combo2Display } =
+                      getDisplayCombinations(fertilizer);
+
+                    return (
+                      <tr>
+                        <td className="p-2 border">{crop || fertilizer.crop}</td>
+                        <td className="p-2 border">{fertilizer.soilConditioner}</td>
+                        <td className="p-2 border">
+                          {combo1Display.map(
+                            (
+                              c: { fertilizer: string; doseKgHa: number },
+                              i: number,
+                            ) => (
+                              <div key={i}>
+                                {c.fertilizer} ({c.doseKgHa} kg/ha)
+                              </div>
+                            ),
+                          )}
+                        </td>
+                        <td className="p-2 border">
+                          {combo2Display.length > 0 ? (
+                            combo2Display.map(
+                              (
+                                c: { fertilizer: string; doseKgHa: number },
+                                i: number,
+                              ) => (
+                                <div key={i}>
+                                  {c.fertilizer} ({c.doseKgHa} kg/ha)
+                                </div>
+                              ),
+                            )
+                          ) : (
+                            <span>-</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })()
                 ) : (
                   <tr>
                     <td colSpan={4} className="p-3 text-center text-gray-400">
@@ -1493,3 +2445,4 @@ const normalizeMicroStatus = (s?: string) => {
     </div>
   );
 }
+

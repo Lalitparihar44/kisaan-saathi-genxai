@@ -8,6 +8,7 @@ import {
   VEGETATION_THRESHOLDS,
   NDWI_THRESHOLDS,
   HEALTH_COLORS,
+  INDEX_COLOR_RAMPS,
 } from "@/lib/constants";
 
 /* -------------------------------------------------------------------------- */
@@ -58,7 +59,7 @@ export async function maskImageToPolygon(
   width: number,
   height: number
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
 
@@ -67,7 +68,10 @@ export async function maskImageToPolygon(
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d");
-      if (!ctx) return reject(new Error("Canvas context not available"));
+      if (!ctx) {
+        resolve(imageUrl);
+        return;
+      }
 
       const [minX, minY, maxX, maxY] = bbox;
       const geoWidth = maxX - minX;
@@ -100,8 +104,8 @@ export async function maskImageToPolygon(
       resolve(canvas.toDataURL("image/png"));
     };
 
-    img.onerror = () =>
-      reject(new Error("Failed to load image for masking"));
+    // Fall back to raw image URL when masking cannot be applied (e.g. CORS/image decode issues).
+    img.onerror = () => resolve(imageUrl);
     img.src = imageUrl;
   });
 }
@@ -142,12 +146,83 @@ export function toISODate(date: Date | string): string {
 }
 
 /** Convert RGB pixel color back to vegetation index value (NDVI-like scale) */
+function hexToRgb(hex: string): [number, number, number] | null {
+  const normalized = hex.replace("#", "").trim();
+  if (normalized.length !== 6) return null;
+  const rr = parseInt(normalized.slice(0, 2), 16);
+  const gg = parseInt(normalized.slice(2, 4), 16);
+  const bb = parseInt(normalized.slice(4, 6), 16);
+  if ([rr, gg, bb].some((n) => Number.isNaN(n))) return null;
+  return [rr, gg, bb];
+}
+
 export function rgbToIndexValue(
   r: number,
   g: number,
-  b: number
+  b: number,
+  layer: LayerKey = "ndvi"
 ): number | null {
   if (r === 0 && g === 0 && b === 0) return null;
+
+  const ramp = INDEX_COLOR_RAMPS[layer];
+  if (Array.isArray(ramp) && ramp.length > 0) {
+    const rampStops = ramp
+      .map((stop) => {
+        const rgb = hexToRgb(stop.color);
+        if (!rgb) return null;
+        return {
+          value: (stop.min + stop.max) / 2,
+          rgb,
+        };
+      })
+      .filter((s): s is { value: number; rgb: [number, number, number] } => s !== null);
+
+    if (rampStops.length > 0) {
+      const distanceTo = (rgb: [number, number, number]) =>
+        Math.sqrt((r - rgb[0]) ** 2 + (g - rgb[1]) ** 2 + (b - rgb[2]) ** 2);
+
+      let nearestIndex = 0;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+
+      for (let i = 0; i < rampStops.length; i++) {
+        const d = distanceTo(rampStops[i].rgb);
+        if (d < nearestDistance) {
+          nearestDistance = d;
+          nearestIndex = i;
+        }
+      }
+
+      const nearest = rampStops[nearestIndex];
+      const left = nearestIndex > 0 ? rampStops[nearestIndex - 1] : null;
+      const right = nearestIndex < rampStops.length - 1 ? rampStops[nearestIndex + 1] : null;
+
+      let neighbor = left;
+      if (left && right) {
+        neighbor = distanceTo(left.rgb) <= distanceTo(right.rgb) ? left : right;
+      } else if (!left && right) {
+        neighbor = right;
+      }
+
+      if (!neighbor) {
+        return Number(nearest.value.toFixed(2));
+      }
+
+      const a = nearest.rgb;
+      const b2 = neighbor.rgb;
+      const ap: [number, number, number] = [r - a[0], g - a[1], b - a[2]];
+      const ab: [number, number, number] = [b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]];
+      const abLen2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2;
+
+      if (abLen2 <= 1e-6) {
+        return Number(nearest.value.toFixed(2));
+      }
+
+      const tRaw = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / abLen2;
+      const t = Math.max(0, Math.min(1, tRaw));
+      const interpolated = nearest.value + (neighbor.value - nearest.value) * t;
+      return Number(interpolated.toFixed(2));
+    }
+  }
 
   const stops = [
     { v: -0.3, color: [0, 0, 130] },
@@ -194,26 +269,26 @@ export function getVegetationLabel(
 
   // NDWI — surface water
   if (layer === "ndwi") {
-    if (value > NDWI_THRESHOLDS.high)
-      return { label: "High water content", color: "#3b82f6" };
-    if (value > NDWI_THRESHOLDS.moderate)
-      return { label: "Moderate water", color: "#60a5fa" };
-    if (value > NDWI_THRESHOLDS.low)
-      return { label: "Low water content", color: "#fbbf24" };
-    return { label: "Very dry", color: "#ef4444" };
+    if (value >= 0.4)
+      return { label: "High surface water", color: "#2563eb" };
+    if (value >= 0.1)
+      return { label: "Wet surface / moist zone", color: "#3b82f6" };
+    if (value >= -0.1)
+      return { label: "Transition zone", color: "#93c5fd" };
+    return { label: "Dry land / non-water", color: "#a16207" };
   }
 
   // NDMI — water stress
   if (layer === "ndmi") {
-    if (value < 0.0)
-      return { label: "Severe water stress", color: "#ef4444" };
-    if (value < 0.3)
-      return { label: "Moderate water stress", color: "#f97316" };
-    if (value < 0.6)
-      return { label: "Adequate moisture", color: "#22c55e" };
+    if (value >= 0.4)
+      return { label: "High canopy moisture", color: "#2563eb" };
+    if (value >= 0.1)
+      return { label: "Moderate crop moisture", color: "#38bdf8" };
+    if (value >= -0.1)
+      return { label: "Balanced moisture", color: "#94a3b8" };
     return {
-      label: "High moisture / over-irrigation",
-      color: "#3b82f6",
+      label: "Crop water stress",
+      color: "#b45309",
     };
   }
 

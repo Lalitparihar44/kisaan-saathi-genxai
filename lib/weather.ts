@@ -27,31 +27,62 @@ export interface BackendResponse {
   generatedAt: string;
 }
 
+const EMPTY_WEATHER_RESPONSE: BackendResponse = {
+  location: { latitude: 0, longitude: 0, timezone: 'UTC' },
+  current: {
+    time: '',
+    temperature: 0,
+    humidity: 0,
+    rain: 0,
+    wind: 0,
+  },
+  forecast7d: [],
+  trend7d: { avgTemp: [], rain: [], humidity: [] },
+  trend30d: { avgTemp: [], rain: [], humidity: [] },
+  temperatureTrend: { trend: 'stable', change: 0 },
+  advisory: { label: '--', title: '', message: '', advice: [] },
+  generatedAt: '',
+};
+
 export async function fetchWeatherData(): Promise<BackendResponse> {
+  const accessToken = localStorage.getItem('accessToken');
+  if (!accessToken) {
+    return EMPTY_WEATHER_RESPONSE;
+  }
+
   try {
     const res = await apiCallWithRefresh(async () => {
       return await makeApiCall(`${API_BASE_URL}/api/v1/weather`, {
         method: 'GET',
         headers: {
-          Authorization: `Bearer ${localStorage.getItem('accessToken')}`,
+          Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
       });
     });
     
-    // Handle different response structures
-    const data = res.data?.data || res.data || res;
-    
-    // Validate required properties exist
-    if (!data.current) {
-      console.error('Weather API response missing current data:', data);
-      throw new Error('Invalid weather data structure');
+    const payload =
+      (res as any)?.data?.data ??
+      (res as any)?.data ??
+      (res as any);
+
+    if ((payload as any)?.success === false) {
+      console.warn('Weather API returned unsuccessful payload:', payload);
+      return EMPTY_WEATHER_RESPONSE;
     }
-    
-    return data;
+
+    if (!payload?.current) {
+      console.warn('Weather API response missing current data:', payload);
+      return EMPTY_WEATHER_RESPONSE;
+    }
+
+    return payload as BackendResponse;
   } catch (error: any) {
+    if (error?.response?.status === 500) {
+      return EMPTY_WEATHER_RESPONSE;
+    }
     console.error('Weather API error:', error);
-    throw new Error(error?.message || "Failed to fetch weather data");
+    return EMPTY_WEATHER_RESPONSE;
   }
 }
 

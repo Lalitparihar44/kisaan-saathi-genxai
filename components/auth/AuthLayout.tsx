@@ -28,7 +28,14 @@ export default function AuthLayout({ title, children }: AuthLayoutProps) {
                         alt="Mithu"
                       />
                     </div>
-                    
+                    <div className="flex align-items-end space-x-3">
+                      <img
+                        className=""
+                        width="200"
+                        src="/images/GenXAILatest.png"
+                        alt="GenXAI"
+                      />
+                    </div>
                   </div>
                   <div className="col-lg-10 col-xl-7 mx-auto">
                     <div className="flex align-items-center justify-content-center">

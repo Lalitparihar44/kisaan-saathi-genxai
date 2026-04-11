@@ -5,6 +5,7 @@ import ReactDOM from "react-dom";
 import type { LayerKey, SourceKey } from "@/lib/types";
 import { SOURCE_NAMES } from "@/lib/types";
 import { INDEX_COLOR_RAMPS } from "@/lib/constants";
+import { getVegetationLabel } from "@/lib/utils";
 
 /* -------------------------------------------------------------------------- */
 /*                               SOURCE DROPDOWN                               */
@@ -87,15 +88,15 @@ export function MapLayerDropdown({
   const menuRef = useRef<HTMLUListElement | null>(null);
 
   const layers: LayerKey[] = [
+    "todays_image",
     "ndvi",
-    "ndre",
-    "evi",
-    "savi",
     "ndwi",
-    "ndmi",
+    "ndre",
+    "savi",
+    "evi",
     "gndvi",
     "sipi",
-    "todays_image",
+    "ndmi",
   ];
 
   const layerLabelMap: Record<LayerKey, string> = {
@@ -162,7 +163,8 @@ export function MapLayerDropdown({
 /* -------------------------------------------------------------------------- */
 
 export function MapLegend({ selectedLayer }: { selectedLayer: LayerKey }) {
-  const [open, setOpen] = useState(false);
+  // DEFAULT STATE: OPEN (true) - Legend displays automatically
+  const [open, setOpen] = useState(true);
   
   if (selectedLayer === "todays_image") return null;
 
@@ -170,31 +172,99 @@ export function MapLegend({ selectedLayer }: { selectedLayer: LayerKey }) {
   if (!ramp || ramp.length === 0) return null;
 
   return (
-    <div className="map-controls-legend p-2 text-white">
-      <button 
-        className="flex items-center justify-between w-full font-semibold text-left"
-        onClick={() => setOpen(!open)}
+    // LEFT SIDEBAR CONTAINER: full height with smooth animation
+    <div 
+      className="absolute left-4 top-4 bottom-[80px] z-50 w-[260px] overflow-y-auto rounded-xl p-0"
+      style={{
+        animation: "legendFadeIn 0.3s ease-in",
+      }}
+    >
+      {/* LEGEND CARD: white background, shadow, rounded corners on RIGHT only */}
+      <div 
+        className="bg-white/20 backdrop-blur-md text-white rounded-xl shadow-lg p-4 border border-white/30 h-full flex flex-col"
+        style={{
+          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.25)",
+          transition: "all 0.2s ease",
+        }}
       >
-        Index legend
-        <span>{open ? '▲' : '▼'}</span>
-      </button>
+        {/* HEADER WITH TOGGLE BUTTON */}
+        <button 
+          className="flex items-center justify-between w-full font-semibold text-left text-white hover:text-gray-100 transition-colors flex-shrink-0"
+          onClick={() => setOpen(!open)}
+          style={{ outline: "none" }}
+        >
+          <span className="text-sm font-bold">Index Legend</span>
+          <span className="text-lg">{open ? '▲' : '▼'}</span>
+        </button>
 
-      {open && (
-        <div className="max-h-[20vh] overflow-y-auto space-y-1 border-t border-white/30 pt-2 mt-2 container">
-          {ramp.map((item, idx) => (
-            <div key={idx} className="row items-center text-xs my-2">
-              <span
-                className="inline-block w-4 h-5 rounded-circle col-1 p-0"
-                style={{ backgroundColor: item.color }}
-              />
-              <span className="text-center col-4 p-0 px-1">
-                {item.min.toFixed(2)} - {item.max.toFixed(2)}
-              </span>
-              {item.label && <span className="col-7 text-left p-0 px-1">{item.label}</span>}
-            </div>
-          ))}
-        </div>
-      )}
+        {/* LEGEND CONTENT: scrollable when open */}
+        {open && (
+          <div 
+            className="overflow-y-auto space-y-2 border-t border-white/30 pt-3 mt-3 flex-1"
+            style={{
+              animation: "contentFadeIn 0.3s ease-in",
+            }}
+          >
+            {ramp.map((item, idx) => (
+              <div key={idx} className="flex items-center gap-2 text-xs">
+                <span
+                  className="inline-block w-4 h-4 rounded flex-shrink-0"
+                  style={{ 
+                    backgroundColor: item.color,
+                    border: "1px solid rgba(0, 0, 0, 0.1)",
+                  }}
+                />
+                <div className="flex-1">
+                  <span className="text-white font-medium">
+                    {item.min.toFixed(2)} - {item.max.toFixed(2)}
+                  </span>
+                  {(item.label || getVegetationLabel((item.min + item.max) / 2, selectedLayer).label) && (
+                    <span className="block text-white/80 text-xs mt-0.5">
+                      {item.label || getVegetationLabel((item.min + item.max) / 2, selectedLayer).label}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* SMOOTH FADE-IN AND SLIDE-IN ANIMATIONS */}
+      <style jsx>{`
+        @keyframes legendFadeIn {
+          from {
+            opacity: 0;
+            transform: translateX(-8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+
+        @keyframes contentFadeIn {
+          from {
+            opacity: 0;
+            max-height: 0;
+          }
+          to {
+            opacity: 1;
+            max-height: 600px;
+          }
+        }
+
+        :global(.map-legend-sidebar) {
+          user-select: none;
+        }
+
+        /* Mobile responsiveness: hidden on very small screens */
+        @media (max-width: 480px) {
+          :global(.map-legend-sidebar) {
+            display: none;
+          }
+        }
+      `}</style>
     </div>
   );
 }

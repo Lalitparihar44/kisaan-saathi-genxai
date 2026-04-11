@@ -86,14 +86,14 @@ export function useMap({
         
  
         const sourceId = "fields";
-        if (map.getSource(sourceId)) {
-          (map.getSource(sourceId) as mapboxgl.GeoJSONSource).setData(geojson);
+        if (map.getSource?.(sourceId)) {
+          (map.getSource?.(sourceId) as mapboxgl.GeoJSONSource)?.setData(geojson);
           return;
         }
  
-        map.addSource(sourceId, { type: "geojson", data: geojson });
+        map.addSource?.(sourceId, { type: "geojson", data: geojson });
 
-        map.addLayer({
+        map.addLayer?.({
             id: "fields-fill",
             type: "fill",
             source: sourceId,
@@ -103,7 +103,7 @@ export function useMap({
             },
           });
  
-        map.addLayer({
+        map.addLayer?.({
           id: "fields-outline",
           type: "line",
           source: sourceId,
@@ -113,7 +113,7 @@ export function useMap({
           },
         });
  
-        map.addLayer({
+        map.addLayer?.({
           id: "fields-selected",
           type: "line",
           source: sourceId,
@@ -138,6 +138,37 @@ export function useMap({
       layer: LayerKey,
       skipFitBounds: boolean = false
     ) => {
+      if (!map) {
+        console.warn("Map not initialized yet");
+        return;
+      }
+
+      const styleReady =
+        typeof map.isStyleLoaded === "function" &&
+        map.isStyleLoaded() &&
+        !!map.getStyle?.();
+
+      if (!styleReady) {
+        console.warn("Map style not loaded yet");
+        return;
+      }
+
+      const hasLayer = (id: string) => {
+        try {
+          return !!map.getStyle?.()?.layers?.some((l: any) => l.id === id);
+        } catch {
+          return false;
+        }
+      };
+
+      const hasSource = (id: string) => {
+        try {
+          return !!map.getStyle?.()?.sources?.[id];
+        } catch {
+          return false;
+        }
+      };
+
       onLoadingChange(true);
  
       const bbox = getBBox(field.geometry);
@@ -189,20 +220,22 @@ export function useMap({
           [bbox[0], bbox[1]],
         ];
  
-        if (map.getLayer("field-heatmap")) map.removeLayer("field-heatmap");
-        if (map.getSource("field-heatmap")) map.removeSource("field-heatmap");
+        if (hasLayer("field-heatmap")) map.removeLayer?.("field-heatmap");
+        if (hasSource("field-heatmap")) map.removeSource?.("field-heatmap");
+        if (hasLayer("todays-image")) map.removeLayer?.("todays-image");
+        if (hasSource("todays-image")) map.removeSource?.("todays-image");
  
-        map.addSource("field-heatmap", {
+        map.addSource?.("field-heatmap", {
           type: "image",
           url: maskedUrl,
           coordinates: coords,
         });
  
-        const beforeLayer = map.getLayer("fields-outline")
+        const beforeLayer = hasLayer("fields-outline")
           ? "fields-outline"
           : undefined;
 
-        map.addLayer(
+        map.addLayer?.(
           {
             id: "field-heatmap",
             type: "raster",
@@ -227,10 +260,12 @@ export function useMap({
         };
         img.src = maskedUrl;
  
-        map.setFilter("fields-selected", ["==", ["get", "id"], field.id]);
+        if (hasLayer("fields-selected")) {
+          map.setFilter?.("fields-selected", ["==", ["get", "id"], field.id]);
+        }
  
         if (!skipFitBounds) {
-          map.fitBounds(
+          map.fitBounds?.(
             [
               [bbox[0], bbox[1]],
               [bbox[2], bbox[3]],
@@ -253,10 +288,10 @@ export function useMap({
   const clearHeatmap = useCallback(() => {
     const map = mapRef.current;
     if (map) {
-      if (map.getLayer("field-heatmap")) map.removeLayer("field-heatmap");
-      if (map.getSource("field-heatmap")) map.removeSource("field-heatmap");
-      if (map.getLayer("todays-image")) map.removeLayer("todays-image");
-      if (map.getSource("todays-image")) map.removeSource("todays-image");
+      if (map.getLayer?.("field-heatmap")) map.removeLayer?.("field-heatmap");
+      if (map.getSource?.("field-heatmap")) map.removeSource?.("field-heatmap");
+      if (map.getLayer?.("todays-image")) map.removeLayer?.("todays-image");
+      if (map.getSource?.("todays-image")) map.removeSource?.("todays-image");
     }
     heatmapImageRef.current = null;
     heatmapBoundsRef.current = null;
@@ -299,6 +334,33 @@ export function useMap({
  
   const renderTodaysImage = useCallback(
     async (map: mapboxgl.Map, field: SelectedField) => {
+      const styleReady =
+        !!map &&
+        typeof map.isStyleLoaded === "function" &&
+        map.isStyleLoaded() &&
+        !!map.getStyle?.();
+
+      if (!styleReady) {
+        console.warn("Map style not loaded yet");
+        return;
+      }
+
+      const hasLayer = (id: string) => {
+        try {
+          return !!map.getStyle?.()?.layers?.some((l: any) => l.id === id);
+        } catch {
+          return false;
+        }
+      };
+
+      const hasSource = (id: string) => {
+        try {
+          return !!map.getStyle?.()?.sources?.[id];
+        } catch {
+          return false;
+        }
+      };
+
       onLoadingChange(true);
  
       console.log("Rendering today's image for field:", field);
@@ -307,27 +369,27 @@ export function useMap({
         console.log("Today's image tile URL:", tileUrl);
  
         // Remove existing layers
-        if (map.getLayer("field-heatmap")) {
-          map.removeLayer("field-heatmap");
+        if (hasLayer("field-heatmap")) {
+          map.removeLayer?.("field-heatmap");
         }
-        if (map.getSource("field-heatmap")) {
-          map.removeSource("field-heatmap");
+        if (hasSource("field-heatmap")) {
+          map.removeSource?.("field-heatmap");
         }
-        if (map.getLayer("todays-image")) {
-          map.removeLayer("todays-image");
+        if (hasLayer("todays-image")) {
+          map.removeLayer?.("todays-image");
         }
-        if (map.getSource("todays-image")) {
-          map.removeSource("todays-image");
+        if (hasSource("todays-image")) {
+          map.removeSource?.("todays-image");
         }
  
         // Add new raster tile source
-        map.addSource("todays-image", {
+        map.addSource?.("todays-image", {
           type: "raster",
           tiles: [tileUrl],
           tileSize: 256,
         });
  
-        map.addLayer({
+        map.addLayer?.({
           id: "todays-image",
           type: "raster",
           source: "todays-image",
@@ -336,7 +398,7 @@ export function useMap({
  
         // Fit bounds to field
         const bbox = getBBox(field.geometry);
-        map.fitBounds(
+        map.fitBounds?.(
           [
             [bbox[0], bbox[1]],
             [bbox[2], bbox[3]],
@@ -345,7 +407,9 @@ export function useMap({
         );
  
         // Highlight selected field
-        map.setFilter("fields-selected", ["==", ["get", "id"], field.id]);
+        if (hasLayer("fields-selected")) {
+          map.setFilter?.("fields-selected", ["==", ["get", "id"], field.id]);
+        }
  
         // Clear heatmap refs
         heatmapImageRef.current = null;
@@ -369,8 +433,8 @@ export function useMap({
       const geojson = await fetchFields();
       onFieldsLoad(geojson.features || []);
  
-      if (map.getSource("fields")) {
-        (map.getSource("fields") as mapboxgl.GeoJSONSource).setData(geojson);
+      if (map.getSource?.("fields")) {
+        (map.getSource?.("fields") as mapboxgl.GeoJSONSource)?.setData(geojson);
       }
     } catch (error) {
       console.error("Failed to reload fields:", error);
@@ -429,6 +493,7 @@ export function useMap({
               if (selectedLayerRef.current === "todays_image") {
                 renderTodaysImage(map, field);
               } else {
+                if (!map || !map.isStyleLoaded()) return;
                 await renderHeatmap(
                   map,
                   field,
@@ -464,6 +529,7 @@ export function useMap({
           if (selectedLayerRef.current === "todays_image") {
             renderTodaysImage(map, field);
           } else {
+            if (!map || !map.isStyleLoaded()) return;
             await renderHeatmap(
               map,
               field,
@@ -475,10 +541,12 @@ export function useMap({
         });
  
         map.on("mouseenter", "fields-fill", () => {
-          map.getCanvas().style.cursor = "pointer";
+          const canvas = map.getCanvas?.();
+          if (canvas) canvas.style.cursor = "pointer";
         });
         map.on("mouseleave", "fields-fill", () => {
-          map.getCanvas().style.cursor = "";
+          const canvas = map.getCanvas?.();
+          if (canvas) canvas.style.cursor = "";
         });
  
         map.on("mousemove", (e) => {
@@ -527,7 +595,7 @@ export function useMap({
               return;
             }
  
-            const value = rgbToIndexValue(r, g, b);
+            const value = rgbToIndexValue(r, g, b, selectedLayerRef.current);
             if (value === null) {
               onHoverChange(null);
               return;
@@ -585,7 +653,7 @@ export function useMap({
 
  useEffect(() => {
   const map = mapRef.current;
-  if (!map || !map.getLayer("fields-fill")) return;
+  if (!map || !map.getLayer?.("fields-fill")) return;
 
   const ramp = INDEX_COLOR_RAMPS[selectedLayer];
 
@@ -607,7 +675,7 @@ export function useMap({
       : "#9ca3af";
 
   // ✅ THIS IS THE MISSING LINE
-  map.setPaintProperty(
+  map.setPaintProperty?.(
     "fields-fill",
     "fill-color",
     fillColorExpression
@@ -623,7 +691,7 @@ export function useMap({
  
       clearHeatmap();
  
-      const source = map.getSource("fields") as
+      const source = map.getSource?.("fields") as
         | mapboxgl.GeoJSONSource
         | undefined;
       if (source) {
@@ -641,7 +709,7 @@ export function useMap({
     const map = mapRef.current;
     if (!map) return;
  
-    const source = map.getSource("fields") as
+    const source = map.getSource?.("fields") as
       | mapboxgl.GeoJSONSource
       | undefined;
     if (source) {
