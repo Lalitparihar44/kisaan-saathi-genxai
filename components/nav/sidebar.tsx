@@ -29,17 +29,22 @@ import {
 const COLLAPSED_WIDTH = 76;
 const EXPANDED_WIDTH = 260;
 
-const navItems = [
+const navItems: Array<{
+  name: string;
+  href: string;
+  icon: React.ForwardRefExoticComponent<any>;
+  isMore?: boolean;
+}> = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Market Rates', href: '/market', icon: BarChart2 },
-  { name: 'Advisories', href: '/advisories', icon: Bell },
   { name: 'Soil Analysis', href: '/soil', icon: Leaf },
-  { name: 'Crop Guide', href: '/crop-guide', icon: BookOpen },
   { name: 'Weather', href: '/weather', icon: Sun },
-  { name: 'Scouting', href: '#', icon: MapPin },
-  { name: 'Reports', href: '#', icon: FileText },
-  { name: 'Services', href: '#', icon: FlaskConical },
-  { name: 'More', href: '#', icon: MoreHorizontal, isMore: true },
+  { name: 'Market Rates', href: '/market', icon: BarChart2 },
+  // { name: 'Advisories', href: '/advisories', icon: Bell },
+  // { name: 'Crop Guide', href: '/crop-guide', icon: BookOpen },
+  // { name: 'Scouting', href: '#', icon: MapPin },
+  // { name: 'Reports', href: '#', icon: FileText },
+  // { name: 'Services', href: '#', icon: FlaskConical },
+  // { name: 'More', href: '#', icon: MoreHorizontal, isMore: true },
 ];
 
 const moreOptions = [

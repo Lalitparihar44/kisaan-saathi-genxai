@@ -58,6 +58,10 @@ export interface FieldProperties {
   crop_name?: string;
   notes?: string;
   sowing_date?: string;
+  soil_type?: string;
+  fertilizer?: string;
+  irrigation?: string;
+  rainfall_pattern?: string;
   health_score?: number;
   area?: number;
   is_selected?: boolean;

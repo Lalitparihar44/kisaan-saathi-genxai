@@ -161,7 +161,16 @@ const AgriReport: React.FC = () => {
         Object.keys(searchFilters).length > 0 ? searchFilters : undefined
       );
       const newData = res.data.fields || [];
-      setData(prev => [...prev, ...newData]);
+      setData(prev => {
+        const combined = [...prev, ...newData];
+
+        // Remove duplicate IDs safely
+        const unique = Array.from(
+          new Map(combined.map(item => [item.id, item])).values()
+        );
+
+        return unique;
+      });
       setCurrentPage(nextPage);
       setHasMore(res.data.pagination.currentPage < res.data.pagination.totalPages);
     } catch (e) {
@@ -368,8 +377,8 @@ const AgriReport: React.FC = () => {
                 )}
             </thead>
             <tbody className="divide-y divide-slate-200 bg-white">
-                {processedData.map((row) => (
-                    <tr key={row.id} className="hover:bg-slate-50 transition-colors group print:hover:bg-transparent">
+                {processedData.map((row, index) => (
+                    <tr key={`${row.id}-${index}`} className="hover:bg-slate-50 transition-colors group print:hover:bg-transparent">
                          {ALL_COLUMNS.filter(col => activeColumns.includes(col.id)).map(col => (
                             <td key={col.id} className="px-6 py-3 whitespace-nowrap print:px-2 print:py-2 print:text-xs">
                                 {renderCell(row, col.id)}

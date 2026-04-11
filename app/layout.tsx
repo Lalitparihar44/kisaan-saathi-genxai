@@ -36,7 +36,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="h-full" suppressHydrationWarning>
+    <html
+      lang="en"
+      className="h-full"
+      data-scroll-behavior="smooth"
+      suppressHydrationWarning
+    >
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased h-full w-full overflow-visible`}
       >

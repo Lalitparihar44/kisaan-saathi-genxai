@@ -21,7 +21,17 @@ const MapLayerDropdown: React.FC<MapLayerDropdownProps> = ({
   onClick,
 }) => {
   const layersToUse = layers || LAYER_NAMES;
-  const layerKeys = Object.keys(layersToUse) as LayerKey[];
+  const layerKeys: LayerKey[] = [
+    "todays_image",
+    "ndvi",
+    "ndwi",
+    "ndre",
+    "savi",
+    "evi",
+    "gndvi",
+    "sipi",
+    "ndmi",
+  ];
   
   return (
     <div
@@ -51,7 +61,7 @@ const MapLayerDropdown: React.FC<MapLayerDropdownProps> = ({
           padding: "8px",
         }}
       >
-        {layerKeys.map((layerKey) => (
+            {layerKeys.map((layerKey) => (
           <li key={layerKey}>
             <a
               className="dropdown-item"

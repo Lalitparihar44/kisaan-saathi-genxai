@@ -16,6 +16,10 @@ interface FormData {
   crop_name: string;
   notes: string;
   sowing_date: string;
+  soil_type: string;
+  fertilizer: string;
+  irrigation: string;
+  rainfall_pattern: string;
 }
 
 interface FieldDropdownProps {
@@ -79,11 +83,11 @@ const FieldDropdown: React.FC<FieldDropdownProps> = ({
             </a>
           </li>
         ) : (
-          fields.map((field) => {
+          fields.map((field, index) => {
             const fieldId = field.properties?.id;
             const isActive = selectedField?.id === fieldId?.toString();
             return (
-              <li key={fieldId || Math.random()}>
+              <li key={`${fieldId}-${index}`}>
                 <div
                   className={`dropdown-item bg-none`}
                   style={{
@@ -143,20 +147,29 @@ const FieldDropdown: React.FC<FieldDropdownProps> = ({
                         e.stopPropagation();
                         try {
                           const data = await fetchFieldById(fieldId?.toString() || "");
+                          const payload = data?.data ?? data;
                           setForm({
-                            name: data.name || "",
-                            crop_name: data.crop_name || "",
-                            notes: data.notes || "",
-                            sowing_date: data.sowing_date
-                              ? data.sowing_date.slice(0, 10)
-                              : ""
+                            name: payload?.name || "",
+                            crop_name: payload?.crop_name || "",
+                            notes: payload?.notes || "",
+                            sowing_date: payload?.sowing_date
+                              ? payload.sowing_date.slice(0, 10)
+                              : "",
+                            soil_type: payload?.soil_type || "",
+                            fertilizer: payload?.fertilizer || "",
+                            irrigation: payload?.irrigation || "",
+                            rainfall_pattern: payload?.rainfall_pattern || "",
                           });
                         } catch {
                           setForm({
                             name: field.properties?.name || "",
                             crop_name: field.properties?.crop_name || "",
                             notes: field.properties?.notes || "",
-                            sowing_date: field.properties?.sowing_date || ""
+                            sowing_date: field.properties?.sowing_date || "",
+                            soil_type: field.properties?.soil_type || "",
+                            fertilizer: field.properties?.fertilizer || "",
+                            irrigation: field.properties?.irrigation || "",
+                            rainfall_pattern: field.properties?.rainfall_pattern || "",
                           });
                         }
                         setEditFieldId(fieldId?.toString() || null);

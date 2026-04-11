@@ -34,14 +34,17 @@ export default function FarmScoreCard( {severity, avgSoilMoisture, soilMoisture7
 
 };
 
-  useEffect(() => {
+useEffect(() => {
+  if (selectedDate) {
     fetchFarmScoreData();
-  }, [selectedField]);
-  
+  }
+}, [selectedField, selectedDate]);
+    
   return (
     <section className="mb-5 flex-1">
       {/* Main grid with scorecard and map below */}
       <div className="grid grid-cols-1 sm:grid-cols-6 gap-6 pb-3 h-full">
+        {/*
         <div className="lg:col-span-1 md:col-span-2 sm:col-span-2 rounded-2xl shadow p-2">
           <h2 className="text-xl font-bold text-gray-800 p-3 border-bottom">
             Farm Balance Scorecard
@@ -86,10 +89,15 @@ export default function FarmScoreCard( {severity, avgSoilMoisture, soilMoisture7
             </div>
           </div>
         </div>
-        <div className="lg:col-span-5 md:col-span-4 sm:col-span-4 shadow rounded-2xl overflow-hidden h-full min-h-[400px]">
+        */}
+        <div className="lg:col-span-6 md:col-span-6 sm:col-span-6 w-full my-4 h-[560px] md:h-[680px] rounded-lg overflow-hidden shadow-lg border border-slate-200">
           <FarmMap 
             title="My Farm" 
-            onFieldSelect={(field) => setSelectedField(field)}
+            onFieldSelect={(field) => {
+               if (!field) return;
+              setSelectedField(field);
+              localStorage.setItem("selectedFieldId", field.id);
+            }}
           />
         </div>
       </div>

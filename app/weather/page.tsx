@@ -82,11 +82,48 @@ type WeatherAnalysisResponse = {
 
 // DATA TRANSFORMER: Converts Backend JSON -> Frontend Object
 function transformBackendData(data: BackendResponse): WeatherAnalysisResponse {
+  const formatDateLocal = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
   const historyDates = Array.from({ length: 30 }, (_, i) => {
     const d = new Date();
     d.setDate(d.getDate() - (30 - i));
-    return d.toISOString().split("T")[0];
+    return formatDateLocal(d);
   });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const backendForecastDates = data.forecast7d.map((d) => d.date);
+  const parsedForecastDates = backendForecastDates.map((raw) => {
+    const dt = new Date(raw);
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  });
+
+  // If backend sends old/invalid forecast dates, rebase to today..today+N.
+  const shouldRebaseForecastDates =
+    parsedForecastDates.some((d) => d == null) ||
+    (() => {
+      const lastValid = parsedForecastDates
+        .filter((d): d is Date => d instanceof Date)
+        .sort((a, b) => a.getTime() - b.getTime())
+        .pop();
+      if (!lastValid) return true;
+      lastValid.setHours(0, 0, 0, 0);
+      return lastValid < today;
+    })();
+
+  const normalizedForecastDates = shouldRebaseForecastDates
+    ? Array.from({ length: data.forecast7d.length }, (_, i) => {
+        const d = new Date(today);
+        d.setDate(today.getDate() + i);
+        return formatDateLocal(d);
+      })
+    : backendForecastDates;
 
   return {
     location: {
@@ -105,14 +142,14 @@ function transformBackendData(data: BackendResponse): WeatherAnalysisResponse {
       lastUpdated: data.generatedAt,
     },
     forecast7d: {
-      temperature: data.forecast7d.map((d) => ({
-        date: d.date,
+      temperature: data.forecast7d.map((d, i) => ({
+        date: normalizedForecastDates[i] ?? d.date,
         min: d.minTemp,
         max: d.maxTemp,
       })),
       precipitation: {
         values: data.forecast7d.map((d) => d.rain),
-        dates: data.forecast7d.map((d) => d.date),
+        dates: normalizedForecastDates,
       },
       humidity: {
         values: data.forecast7d.map((d) => d.avgHumidity),
@@ -284,11 +321,28 @@ export default function WeatherPage() {
     if (realtime) {
       createWeatherStream(
         (backendData) => {
-          const data = backendData.split("\n")
-            .find((line: string) => line.startsWith("data:"))
-            ?.replace("data:", "")
-            .trim();
-          const transformedData = transformBackendData(JSON.parse(data));
+          try {
+            if (backendData == null) return;
+
+            let payload: any = backendData;
+
+            // Support legacy SSE string format and new object payload format.
+            if (typeof backendData === "string") {
+              const sseData = backendData
+                .split("\n")
+                .find((line: string) => line.startsWith("data:"))
+                ?.replace("data:", "")
+                .trim();
+              const raw = sseData && sseData.length ? sseData : backendData;
+              payload = JSON.parse(raw);
+            }
+
+            const normalizedPayload =
+              payload?.data?.data ??
+              payload?.data ??
+              payload;
+
+            const transformedData = transformBackendData(normalizedPayload);
           setData(transformedData);
 
           // Update coords from response
@@ -300,6 +354,9 @@ export default function WeatherPage() {
               lat: Number(transformedData.location.latitude),
               lon: Number(transformedData.location.longitude),
             });
+          }
+          } catch (parseErr) {
+            console.error("Weather stream parse error:", parseErr, backendData);
           }
         },
         () => {
@@ -571,7 +628,7 @@ export default function WeatherPage() {
               </div>
             </div>
 
-            {/* 2C. PARROT - Significantly Shrunk */}
+            {/*
             <div className="hidden lg:flex w-24 shrink-0 flex-col items-center justify-center pl-2 border-l border-dashed border-gray-100">
               <Mithu
                 mood={mithuMoodFromSummary(data?.current?.summary)}
@@ -584,6 +641,7 @@ export default function WeatherPage() {
               />
               <div className="text-[8px] text-gray-400 font-bold uppercase mt-1">Trends</div>
             </div>
+            */}
           </div>
         </div>
 

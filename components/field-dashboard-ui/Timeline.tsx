@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Calendar from './TimelineCalendar';
 import { formatDate } from '@/lib/utils';
 
@@ -21,8 +21,14 @@ export default function Timeline({
   nextImageDate,
   isLoading = false,
 }: TimelineProps) {
+  const timelineRef = useRef<HTMLDivElement | null>(null);
   const currentIndex = dates.indexOf(selectedDate);
   const [showCalendar, setShowCalendar] = useState(false);
+
+  useEffect(() => {
+    if (!timelineRef.current) return;
+    timelineRef.current.scrollLeft = timelineRef.current.scrollWidth;
+  }, [dates]);
 
   const handlePrevious = () => {
     if (currentIndex > 0) {
@@ -70,6 +76,7 @@ export default function Timeline({
               dates={calendarDates}
               selectedDate={selectedDate}
               onSelect={(date) => {
+                localStorage.setItem("selectedSceneDate", date);
                 onDateSelect(date);
                 setShowCalendar(false);
               }}
@@ -87,7 +94,7 @@ export default function Timeline({
         ←
       </button>
 
-      <div className="timeline-scroll">
+      <div className="timeline-scroll" ref={timelineRef}>
         {isLoading ? (
           <div className="loading-dates">Loading available imagery...</div>
         ) : (
@@ -97,7 +104,10 @@ export default function Timeline({
               className={`timeline-date ${
                 date === selectedDate ? 'active' : ''
               }`}
-              onClick={() => onDateSelect(date)}
+              onClick={() => {
+                localStorage.setItem("selectedSceneDate", date);   // ✅ ADD
+                onDateSelect(date);
+              }}
             >
               <span className="date-label">{formatDate(date)}</span>
               <span className="date-indicator">S2</span>
@@ -158,6 +168,7 @@ export default function Timeline({
 
         .timeline-scroll {
           display: flex;
+          justify-content: flex-end;
           gap: 4px;
           overflow-x: auto;
           flex: 1;

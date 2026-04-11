@@ -226,6 +226,115 @@ useEffect(() => {
   }));
 }, [priceDynamics]);
 
+  const commodityMovers = useMemo(() => {
+    const toNumber = (value: any): number | null => {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string") {
+        const parsed = Number(value.replace(/[^\d.-]/g, ""));
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      return null;
+    };
+
+    const grouped = new Map<
+      string,
+      { current: number[]; previous: number[] }
+    >();
+
+    const sourceItems = rawMarketItems.length > 0 ? rawMarketItems : markets;
+
+    sourceItems.forEach((item: any) => {
+      const commodityName = String(item?.commodity || "").trim();
+      if (!commodityName) return;
+
+      const currentPrice = toNumber(
+        item?.modal ?? item?.price ?? item?.modal_price
+      );
+      if (currentPrice === null) return;
+
+      let previousPrice: number | null = null;
+      const history = Array.isArray(item?.trendHistory) ? item.trendHistory : [];
+
+      if (history.length >= 2) {
+        previousPrice = toNumber(
+          history[history.length - 2]?.price ??
+            history[history.length - 2]?.modal
+        );
+      }
+
+      if (previousPrice === null) {
+        previousPrice = toNumber(
+          item?.previous_modal ?? item?.prevModal ?? item?.yesterday_modal
+        );
+      }
+
+      if (previousPrice === null) {
+        const minPrice = toNumber(item?.min_price ?? item?.minPrice ?? item?.min);
+        const maxPrice = toNumber(item?.max_price ?? item?.maxPrice ?? item?.max);
+        if (minPrice !== null && maxPrice !== null) {
+          previousPrice = (minPrice + maxPrice) / 2;
+        }
+      }
+
+      if (!grouped.has(commodityName)) {
+        grouped.set(commodityName, { current: [], previous: [] });
+      }
+
+      const bucket = grouped.get(commodityName)!;
+      bucket.current.push(currentPrice);
+      if (previousPrice !== null) {
+        bucket.previous.push(previousPrice);
+      }
+    });
+
+    return Array.from(grouped.entries())
+      .map(([name, prices]) => {
+        const currentAvg =
+          prices.current.reduce((sum, v) => sum + v, 0) / prices.current.length;
+
+        const previousAvg =
+          prices.previous.length > 0
+            ? prices.previous.reduce((sum, v) => sum + v, 0) /
+              prices.previous.length
+            : null;
+
+        const change =
+          previousAvg && previousAvg > 0
+            ? ((currentAvg - previousAvg) / previousAvg) * 100
+            : 0;
+
+        return {
+          name,
+          price: Number(currentAvg.toFixed(2)),
+          change: Number(change.toFixed(2)),
+        };
+      })
+      .filter((row) => Number.isFinite(row.price) && Number.isFinite(row.change));
+  }, [rawMarketItems, markets]);
+
+  const dynamicTopGainers = useMemo(
+    () => {
+      const gainers = commodityMovers
+        .filter((row) => row.change > 0)
+        .sort((a, b) => b.change - a.change)
+        .slice(0, 5);
+
+      if (gainers.length > 0) return gainers;
+
+      // Fallback: show today's highest priced crops when positive gainers are unavailable.
+      return [...commodityMovers]
+        .sort((a, b) => b.price - a.price)
+        .slice(0, 5)
+        .map((row) => ({ ...row, change: Math.max(0, row.change) }));
+    },
+    [commodityMovers]
+  );
+
+  const dynamicTopLosers = useMemo(
+    () => commodityMovers.filter((row) => row.change < 0).sort((a, b) => a.change - b.change).slice(0, 5),
+    [commodityMovers]
+  );
+
 
   return (
     <div className="min-h-screen h-full bg-[#f8fafc] pb-20 font-sans selection:bg-indigo-100 overflow-y-auto overflow-x-hidden">
@@ -467,7 +576,7 @@ useEffect(() => {
             {/* 3. RIGHT COLUMN: FORECASTING + SIDEBAR TABLES (4/12) */}
             <div className="lg:col-span-4 flex flex-col gap-6 animate-in slide-in-from-right duration-700">
               
-              {/* WHITE THEME FORECASTING CARD WITH LIGHT YELLOW HEADER */}
+              {/*
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col transition-all hover:shadow-md">
                 <div className="px-3 py-3 bg-teal-50 border-b border-teal-100 flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -502,6 +611,7 @@ useEffect(() => {
                   </div>
                 </div>
               </div>
+              */}
 
               {/* TOP GAINERS */}
               <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden transition-all hover:shadow-md">
@@ -512,15 +622,19 @@ useEffect(() => {
                   </div>
                 </div>
                 <div className="p-2 max-h-[192px] overflow-y-auto custom-scrollbar">
-                  {TOP_GAINERS.map((item, idx) => (
-                    <div key={idx} className="flex items-center justify-between px-3 py-2 hover:bg-slate-50 rounded-2xl transition-all">
-                      <span className="text-md font-bold textslate-600 group-hover:text-slate-900">{item.name}</span>
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-regular text-slate-900">₹{item.price}</span>
-                        <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg">+{item.change}%</span>
+                  {dynamicTopGainers.length > 0 ? (
+                    dynamicTopGainers.map((item, idx) => (
+                      <div key={`${item.name}-${idx}`} className="flex items-center justify-between px-3 py-2 hover:bg-slate-50 rounded-2xl transition-all">
+                        <span className="text-md font-bold textslate-600 group-hover:text-slate-900">{item.name}</span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm font-regular text-slate-900">₹{item.price}</span>
+                          <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg">+{item.change}%</span>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <div className="px-3 py-2 text-xs text-slate-400">No gaining crops available</div>
+                  )}
                 </div>
               </div>
 
@@ -533,15 +647,19 @@ useEffect(() => {
                   </div>
                 </div>
                 <div className="p-2 max-h-[192px] overflow-y-auto custom-scrollbar">
-                  {TOP_LOSERS.map((item, idx) => (
-                    <div key={idx} className="flex items-center justify-between px-3 py-2 hover:bg-slate-50 rounded-2xl transition-all">
-                      <span className="text-md font-bold textslate-600 group-hover:text-slate-900">{item.name}</span>
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-regular text-slate-900">₹{item.price}</span>
-                        <span className="text-[10px] font-black text-rose-600 bg-rose-50 px-2 py-1 rounded-lg">{item.change}%</span>
+                  {dynamicTopLosers.length > 0 ? (
+                    dynamicTopLosers.map((item, idx) => (
+                      <div key={`${item.name}-${idx}`} className="flex items-center justify-between px-3 py-2 hover:bg-slate-50 rounded-2xl transition-all">
+                        <span className="text-md font-bold textslate-600 group-hover:text-slate-900">{item.name}</span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm font-regular text-slate-900">₹{item.price}</span>
+                          <span className="text-[10px] font-black text-rose-600 bg-rose-50 px-2 py-1 rounded-lg">{item.change}%</span>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <div className="px-3 py-2 text-xs text-slate-400">No losing crops available</div>
+                  )}
                 </div>
               </div>
 
