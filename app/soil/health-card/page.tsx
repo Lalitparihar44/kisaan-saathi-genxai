@@ -1,6 +1,6 @@
 "use client";
 export const dynamic = "force-dynamic";
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, Suspense } from "react";
 import { useReactToPrint } from "react-to-print";
 import { Printer, Loader2, Download } from "lucide-react";
 import {
@@ -171,6 +171,14 @@ function getRating(param: string, value: number | null) {
 
 
 export default function SoilHealthCardPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-gray-50"><Loader2 className="w-8 h-8 animate-spin text-green-700" /></div>}>
+      <SoilHealthCardContent />
+    </Suspense>
+  );
+}
+
+function SoilHealthCardContent() {
   const [data, setData] = useState<HealthCardData>(INITIAL_DATA);
   const [soil, setSoil] = useState<any>(null);
   const [loading, setLoading] = useState(true);
