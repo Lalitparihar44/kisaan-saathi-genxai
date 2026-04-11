@@ -15,7 +15,7 @@ import {
   Filler,
 } from "chart.js";
 import { Line } from "react-chartjs-2";
-import { fetchSoilData, fetchFertilizerRecommendation, fetchSoilByDate, predictSoil } from "@/lib/soil";
+import { fetchSoilData, fetchFertilizerRecommendation, fetchSoilByDate, predictSoil } from "@/lib/soil";  // issue ot found
 import { fetchFieldById } from "@/lib/api";
 import FarmMap from "@/components/ui/farm-map";
 import { useSearchParams } from "next/navigation";
